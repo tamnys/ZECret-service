@@ -54,15 +54,6 @@ const EMBEDDED_RELEASES: &[EmbeddedRelease] = &[
         ],
         manifest_json: include_bytes!("releases/phala-prod9-blockcount-20261001.json"),
     },
-    EmbeddedRelease {
-        id: "phala-prod5-testnet-wallet-read-20261004-5",
-        manifest_sha256: [
-            0x25, 0x62, 0x5b, 0x30, 0x37, 0xff, 0x8f, 0x00, 0xa9, 0xdd, 0x2a, 0x9d, 0x16, 0xdd,
-            0x8f, 0x0b, 0xa8, 0x96, 0xbc, 0x55, 0xb7, 0xd3, 0x04, 0x93, 0x33, 0xca, 0x4a, 0x5e,
-            0x11, 0xf4, 0x5c, 0x31,
-        ],
-        manifest_json: include_bytes!("releases/phala-prod5-wallet-read-20261004.json"),
-    },
 ];
 
 pub(crate) fn is_embedded(id: &str) -> bool {
@@ -325,24 +316,6 @@ mod tests {
         let release = &selected[0];
         let current =
             include_bytes!("../../../deploy/phala/releases/2026-10-01/blockcount-app-compose.json");
-        let previous =
-            include_bytes!("../../../deploy/phala/releases/2026-10-01/ticketed-app-compose.json");
-        assert!(release.matches_launch_config(current));
-        assert!(!release.matches_launch_config(previous));
-    }
-
-    #[test]
-    fn wallet_read_release_is_bound_to_the_new_launch() {
-        let policy = PhalaTrustedPolicy {
-            phala_trusted_enabled: true,
-            reviewed_release_ids: vec!["phala-prod5-testnet-wallet-read-20261004-5".into()],
-            ..PhalaTrustedPolicy::default()
-        };
-        let selected = PhalaTrustedRelease::selected(&policy).unwrap();
-        let release = &selected[0];
-        let current = include_bytes!(
-            "../../../deploy/phala/releases/2026-10-04/wallet-read-app-compose.json"
-        );
         let previous =
             include_bytes!("../../../deploy/phala/releases/2026-10-01/ticketed-app-compose.json");
         assert!(release.matches_launch_config(current));
