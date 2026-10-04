@@ -49,6 +49,16 @@ The bridge binds only to loopback and creates a per-run capability file inside `
 
 Add `--dashboard` to the bridge command to open an optional, separate loopback status page. The bridge prints its one-time local link only to the operator's terminal. The page shows whether a wallet read is in progress and the outcome of the last upstream read; it cannot send wallet RPCs or inspect wallet keys or balances. A past completed read does not mean a verified connection is still open. Node synchronization and wallet scan progress are not available from this bridge status page. The wallet application's own scan report is authoritative for its local progress.
 
+For a public chain-data check without a wallet key, use `zrpc-wallet-reference probe` with `info`, `tip`, or `block HEIGHT`. Each invocation makes one attested wallet RPC and uses one admission ticket:
+
+```sh
+./target/debug/zrpc-wallet-reference probe "$ZRPC_BRIDGE_BIND" "$ZRPC_CAPABILITY_DIR" info
+./target/debug/zrpc-wallet-reference probe "$ZRPC_BRIDGE_BIND" "$ZRPC_CAPABILITY_DIR" tip
+./target/debug/zrpc-wallet-reference probe "$ZRPC_BRIDGE_BIND" "$ZRPC_CAPABILITY_DIR" block "$ZRPC_BLOCK_HEIGHT"
+```
+
+Choose a block height present on the connected Testnet node; the displayed `node_height` is that node's progress, not a claim of global chain freshness.
+
 ## Reference wallet
 
 Set `ZRPC_WALLET_DIR` to a new private directory, `ZRPC_UFVK_FILE` to an owner-private regular file containing a **testnet unified full viewing key**, `ZRPC_BIRTHDAY_HEIGHT` to the wallet's restoration birthday, and `ZRPC_CACHE_DIR` to an existing owner-private cache directory. The reference reader reads the viewing key locally and never gives it to the bridge. Use a batch size chosen for your device's measured memory capacity; the CLI has no implicit batch size.

@@ -39,7 +39,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some("init") => init(args).await,
         Some("scan") => scan(args).await,
         Some("pending") => pending(args).await,
-        _ => Err("usage: zrpc-wallet-reference {init|scan|pending} ...".into()),
+        Some("probe") => probe(args).await,
+        _ => Err("usage: zrpc-wallet-reference {init|scan|pending|probe} ...".into()),
     }
 }
 
@@ -69,6 +70,60 @@ fn read_viewing_key(path: PathBuf) -> Result<UnifiedFullViewingKey, Box<dyn Erro
     let decoded = UnifiedFullViewingKey::decode(&Network::TestNetwork, encoded.trim());
     encoded.zeroize();
     decoded.map_err(|_| "invalid testnet unified full viewing key".into())
+}
+
+// Public chain-data smoke test for an attested bridge. Each invocation makes
+// exactly one wallet RPC and therefore consumes one free admission ticket.
+async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
+    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block} [HEIGHT]";
+    let bind = parse_bind(args.next().ok_or(usage)?)?;
+    let capability_dir = PathBuf::from(args.next().ok_or(usage)?);
+    let method = args.next().ok_or(usage)?;
+    let height = match method.to_str() {
+        Some("block") => Some(args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?),
+        Some("info" | "tip") => None,
+        _ => return Err(usage.into()),
+    };
+    if args.next().is_some() {
+        return Err(usage.into());
+    }
+    let adapter = LocalWalletAdapter::connect(bind, &capability_dir).await?;
+    let mut client = adapter.maintained_scanner_client();
+    match method.to_str() {
+        Some("info") => {
+            let info = client.get_lightd_info(Empty {}).await?.into_inner();
+            println!(
+                "network={} node_height={}",
+                info.chain_name, info.block_height
+            );
+        }
+        Some("tip") => {
+            let tip = client.get_latest_block(ChainSpec {}).await?.into_inner();
+            println!("node_height={} hash_bytes={}", tip.height, tip.hash.len());
+        }
+        Some("block") => {
+            let height = height.ok_or(usage)?;
+            let block = client
+                .get_block(BlockId {
+                    height: u64::from(height),
+                    hash: vec![],
+                })
+                .await?
+                .into_inner();
+            if block.height != u64::from(height) {
+                return Err("compact block height differs from request".into());
+            }
+            println!(
+                "compact_height={} hash_bytes={} prev_hash_bytes={} transactions={}",
+                block.height,
+                block.hash.len(),
+                block.prev_hash.len(),
+                block.vtx.len()
+            );
+        }
+        _ => return Err(usage.into()),
+    }
+    Ok(())
 }
 
 async fn init(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
