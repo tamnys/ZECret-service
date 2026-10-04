@@ -1,0 +1,8 @@
+{
+  "network": "testnet",
+  "phala_trusted_enabled": true,
+  "reviewed_release_ids": [
+    "phala-prod5-testnet-wallet-read-20261004-5"
+  ],
+  "schema_version": 1
+}
