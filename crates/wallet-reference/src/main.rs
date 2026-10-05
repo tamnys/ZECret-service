@@ -18,7 +18,7 @@ use zcash_client_backend::{
     data_api::chain::BlockCache,
     data_api::wallet::{ConfirmationsPolicy, decrypt_and_store_transaction},
     data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite},
-    proto::service::{BlockId, BlockRange, ChainSpec, Empty},
+    proto::service::{BlockId, BlockRange, ChainSpec, Empty, TransparentAddressBlockFilter},
     sync,
 };
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
@@ -77,10 +77,11 @@ fn read_viewing_key(path: PathBuf) -> Result<UnifiedFullViewingKey, Box<dyn Erro
 // Public chain-data smoke test for an attested bridge. Each invocation makes
 // exactly one wallet RPC and therefore consumes one free admission ticket.
 async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
-    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block HEIGHT|range START_HEIGHT END_HEIGHT}";
+    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block HEIGHT|range START_HEIGHT END_HEIGHT|history TESTNET_ADDRESS START_HEIGHT END_HEIGHT}";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
     let capability_dir = PathBuf::from(args.next().ok_or(usage)?);
     let method = args.next().ok_or(usage)?;
+    let mut history_address = None;
     let heights = match method.to_str() {
         Some("block") => {
             let height = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
@@ -91,6 +92,15 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             let end = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
             if start == 0 || start > end {
                 return Err("range must be ascending and start above genesis".into());
+            }
+            Some((start, end))
+        }
+        Some("history") => {
+            history_address = Some(args.next().ok_or(usage)?.to_string_lossy().into_owned());
+            let start = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
+            let end = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
+            if start > end {
+                return Err("history range must be ascending".into());
             }
             Some((start, end))
         }
@@ -178,6 +188,40 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             println!(
                 "range_complete=true blocks={} elapsed_ms={}",
                 expected - u64::from(start),
+                started.elapsed().as_millis()
+            );
+        }
+        Some("history") => {
+            let (start, end) = heights.ok_or(usage)?;
+            let started = Instant::now();
+            let mut stream = client
+                .get_taddress_transactions(TransparentAddressBlockFilter {
+                    address: history_address.ok_or(usage)?,
+                    range: Some(BlockRange {
+                        start: Some(BlockId {
+                            height: u64::from(start),
+                            hash: vec![],
+                        }),
+                        end: Some(BlockId {
+                            height: u64::from(end),
+                            hash: vec![],
+                        }),
+                        pool_types: vec![],
+                    }),
+                })
+                .await?
+                .into_inner();
+            let mut count = 0_u64;
+            let mut previous = u64::from(start);
+            while let Some(transaction) = stream.message().await? {
+                if transaction.height < previous || transaction.height > u64::from(end) {
+                    return Err("transparent history order differs from request".into());
+                }
+                previous = transaction.height;
+                count += 1;
+            }
+            println!(
+                "history_complete=true transactions={count} elapsed_ms={}",
                 started.elapsed().as_millis()
             );
         }
