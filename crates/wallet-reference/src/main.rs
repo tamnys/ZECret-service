@@ -2,6 +2,7 @@
 //! imports a viewing key into a new local database; `scan` opens that database.
 //! Neither operation sends keys, seeds, or decrypted wallet data to the bridge.
 
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use rusqlite::{Connection, OpenFlags};
 use std::{
     env,
@@ -268,7 +269,7 @@ async fn init(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     fs::set_permissions(&wallet_path, fs::Permissions::from_mode(0o600))?;
     rusqlite::vtab::array::load_module(&conn)?;
     let mut wallet =
-        WalletDb::from_connection(conn, Network::TestNetwork, SystemClock, rand_core::OsRng);
+        WalletDb::from_connection(conn, Network::TestNetwork, SystemClock, UnwrapErr(SysRng));
     init_wallet_db(&mut wallet, None)?;
     wallet.import_account_ufvk(
         "reference",
@@ -284,7 +285,7 @@ async fn init(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-type LocalWallet = WalletDb<Connection, Network, SystemClock, rand_core::OsRng>;
+type LocalWallet = WalletDb<Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
 fn same_scanned_tip(height: BlockHeight, hash: BlockHash, node: &BlockId) -> bool {
     node.height == u64::from(u32::from(height)) && node.hash.as_slice() == hash.0
@@ -312,7 +313,7 @@ fn open_existing_wallet(wallet_path: &Path) -> Result<LocalWallet, Box<dyn Error
     // The wallet database is never mounted into or opened by the local bridge.
     // It must have been initialized with viewing keys by the wallet application.
     let wallet =
-        WalletDb::from_connection(conn, Network::TestNetwork, SystemClock, rand_core::OsRng);
+        WalletDb::from_connection(conn, Network::TestNetwork, SystemClock, UnwrapErr(SysRng));
     if wallet.get_account_ids()?.is_empty() {
         return Err("wallet database has no locally imported viewing-key account".into());
     }

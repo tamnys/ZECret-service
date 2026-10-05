@@ -45,7 +45,7 @@ jobs:
           if tomllib.loads(Path(sys.argv[1]).read_text())["toolchain"]["channel"] != "1.94.1":
               raise SystemExit("reviewed Rust toolchain pin differs")
           PY
-          python3 -I "$source/scripts/check-cargo-registry-age.py"
+          python3 -I "$source/scripts/check-cargo-registry-age.py" --nu7-testnet-wallet-evaluation
           python3 -I "$source/scripts/check-cargo-git-source.py"
 
       - name: Verify reviewed dstack Git object before Cargo fetch

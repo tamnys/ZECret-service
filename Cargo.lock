@@ -4479,6 +4479,7 @@ dependencies = [
  "hex",
  "libc",
  "prost",
+ "rand 0.10.3",
  "rand_core 0.10.0",
  "rusqlite",
  "rustix",

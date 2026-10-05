@@ -39,6 +39,7 @@ zcash_client_sqlite = { version = "=0.23.0-pre.0", default-features = false, fea
 zcash_keys = { version = "=0.17.0-pre.0", default-features = false, features = ["orchard", "transparent-inputs"] }
 async-trait = "=0.1.92"
 rand_core = "=0.10.0"
+rand = { version = "=0.10.3", default-features = false, features = ["sys_rng"] }
 
 # Maintained dstack runtime-event encoding/replay, pinned to the catalog OS source.
 cc-eventlog = { git = "https://github.com/Dstack-TEE/dstack", rev = "282eeb27d22d8f091ad0fa5a90e638f85cf68751", version = "=0.5.9" }

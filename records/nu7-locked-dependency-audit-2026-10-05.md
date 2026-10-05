@@ -2,7 +2,7 @@
 
 The operator approved a seven-day-hold exception for Zebra 7.0.0-rc.0 and the six directly pinned wallet prereleases in [the NU7 review](nu7-upgrade-review-2026-10-05.md). A guarded Cargo resolution of the exact direct pins changed 64 registry package versions. This read-only crates.io API audit checked each changed package against the committed lockfile checksum and yank status at 2026-10-05T21:39:33.547822Z. All 64 matched; 21 were published after the seven-day cutoff 2026-09-28T21:39:33.547822Z.
 
-The operator subsequently approved a narrow age exception for the 15 transitive versions listed below. All 21 exceptions apply only to these exact package/version/checksum entries in `Cargo.lock` SHA-256 `cb7b5af8150de926ccc82d259444a4ff3c0d16aa9b8f644b7ed259111e3f90b0`. This permits a locked build and validation, not a blanket exception for future resolutions, image approval, or CVM acceptance.
+The operator subsequently approved a narrow age exception for the 15 transitive versions listed below. All 21 exceptions apply only to these exact package/version/checksum entries in `Cargo.lock` SHA-256 `5ff7393aa6a4c952779afa9196ccff433ec14ba72c3603191c7b149f175bfd08`. The lock changed from the initial audit only to add an existing, audited `rand 0.10.3` package as a direct dependency of the reference reader; no registry package version or checksum changed. This permits a locked build and validation, not a blanket exception for future resolutions, image approval, or CVM acceptance.
 
 | Package | Version | Published UTC | SHA-256 | Age exception |
 |---|---|---|---|---|
