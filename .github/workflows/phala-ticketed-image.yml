@@ -109,7 +109,7 @@ jobs:
           source="$GITHUB_WORKSPACE/source"
           scratch="$source/.codex-tmp/ticketed-image"
           context="$scratch/context"
-          base=ghcr.io/tamnys/zecret-service-preview@sha256:a73f032681a26f8b2cb960cd32f355c478612e49ae657b5ca656f2b105fb4d78
+          base=ghcr.io/tamnys/zecret-service-preview@sha256:45daa5e31f3263c0c58ce4ceec572b81acb5efbc11f6c82c12a58f5468903132
           buildkit=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
           image=zrpc-ticketed:checked-local
           docker pull --platform linux/amd64 "$base"

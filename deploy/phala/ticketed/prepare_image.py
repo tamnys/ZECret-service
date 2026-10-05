@@ -16,7 +16,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 BASE_IMAGE = (
     "ghcr.io/tamnys/zecret-service-preview@sha256:"
-    "a73f032681a26f8b2cb960cd32f355c478612e49ae657b5ca656f2b105fb4d78"
+    "45daa5e31f3263c0c58ce4ceec572b81acb5efbc11f6c82c12a58f5468903132"
 )
 PUBLIC_HASHES = {
     "issuer-public.der": "7a55fad48f6f6be196cf4ad297c5e698dd871aadcba08480c3d83f83e6b04141",
