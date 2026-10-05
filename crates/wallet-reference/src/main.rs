@@ -12,11 +12,13 @@ use std::{
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    time::Instant,
 };
 use zcash_client_backend::{
+    data_api::chain::BlockCache,
     data_api::wallet::{ConfirmationsPolicy, decrypt_and_store_transaction},
     data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite},
-    proto::service::{BlockId, ChainSpec, Empty},
+    proto::service::{BlockId, BlockRange, ChainSpec, Empty},
     sync,
 };
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
@@ -75,12 +77,23 @@ fn read_viewing_key(path: PathBuf) -> Result<UnifiedFullViewingKey, Box<dyn Erro
 // Public chain-data smoke test for an attested bridge. Each invocation makes
 // exactly one wallet RPC and therefore consumes one free admission ticket.
 async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
-    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block} [HEIGHT]";
+    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block HEIGHT|range START_HEIGHT END_HEIGHT}";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
     let capability_dir = PathBuf::from(args.next().ok_or(usage)?);
     let method = args.next().ok_or(usage)?;
-    let height = match method.to_str() {
-        Some("block") => Some(args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?),
+    let heights = match method.to_str() {
+        Some("block") => {
+            let height = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
+            Some((height, height))
+        }
+        Some("range") => {
+            let start = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
+            let end = args.next().ok_or(usage)?.to_string_lossy().parse::<u32>()?;
+            if start == 0 || start > end {
+                return Err("range must be ascending and start above genesis".into());
+            }
+            Some((start, end))
+        }
         Some("info" | "tip") => None,
         _ => return Err(usage.into()),
     };
@@ -102,7 +115,7 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             println!("node_height={} hash_bytes={}", tip.height, tip.hash.len());
         }
         Some("block") => {
-            let height = height.ok_or(usage)?;
+            let height = heights.ok_or(usage)?.0;
             let block = client
                 .get_block(BlockId {
                     height: u64::from(height),
@@ -119,6 +132,53 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
                 block.hash.len(),
                 block.prev_hash.len(),
                 block.vtx.len()
+            );
+        }
+        Some("range") => {
+            let (start, end) = heights.ok_or(usage)?;
+            let started = Instant::now();
+            let mut stream = client
+                .get_block_range(BlockRange {
+                    start: Some(BlockId {
+                        height: u64::from(start),
+                        hash: vec![],
+                    }),
+                    end: Some(BlockId {
+                        height: u64::from(end),
+                        hash: vec![],
+                    }),
+                    pool_types: vec![],
+                })
+                .await?
+                .into_inner();
+            let mut expected = u64::from(start);
+            let mut prior_hash: Option<Vec<u8>> = None;
+            while let Some(block) = stream.message().await? {
+                if block.height != expected || block.hash.len() != 32 || block.prev_hash.len() != 32
+                {
+                    return Err("compact block range differs from request".into());
+                }
+                if prior_hash
+                    .as_deref()
+                    .is_some_and(|hash| block.prev_hash != hash)
+                {
+                    return Err("compact block predecessor differs from prior hash".into());
+                }
+                println!(
+                    "compact_height={} elapsed_ms={}",
+                    block.height,
+                    started.elapsed().as_millis()
+                );
+                prior_hash = Some(block.hash);
+                expected += 1;
+            }
+            if expected != u64::from(end) + 1 {
+                return Err("compact block range ended before requested height".into());
+            }
+            println!(
+                "range_complete=true blocks={} elapsed_ms={}",
+                expected - u64::from(start),
+                started.elapsed().as_millis()
             );
         }
         _ => return Err(usage.into()),
@@ -215,13 +275,25 @@ fn open_existing_wallet(wallet_path: &Path) -> Result<LocalWallet, Box<dyn Error
     Ok(wallet)
 }
 
+fn scan_progress(
+    wallet: &LocalWallet,
+    cache: &SqliteBlockCache,
+) -> Result<(u32, u32), Box<dyn Error>> {
+    let wallet_height = wallet
+        .get_wallet_summary(ConfirmationsPolicy::default())?
+        .map(|summary| u32::from(summary.fully_scanned_height()))
+        .unwrap_or(0);
+    let cache_height = cache.get_tip_height(None)?.map(u32::from).unwrap_or(0);
+    Ok((wallet_height, cache_height))
+}
+
 async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     let usage = "usage: zrpc-wallet-reference scan LOOPBACK_HOST:PORT CAPABILITY_DIR WALLET_DB CACHE_DB BATCH_SIZE";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
     let capability_dir = PathBuf::from(args.next().ok_or(usage)?);
     let wallet_path = PathBuf::from(args.next().ok_or(usage)?);
     let cache_path = PathBuf::from(args.next().ok_or(usage)?);
-    let batch_size: u32 = args.next().ok_or(usage)?.to_string_lossy().parse()?;
+    let mut batch_size: u32 = args.next().ok_or(usage)?.to_string_lossy().parse()?;
     if args.next().is_some() || batch_size == 0 {
         return Err(usage.into());
     }
@@ -233,14 +305,52 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     let adapter = LocalWalletAdapter::connect(bind, &capability_dir).await?;
     let mut client = adapter.maintained_scanner_client();
     let cache = SqliteBlockCache::open(&cache_path)?;
-    sync::run(
-        &mut client,
-        &Network::TestNetwork,
-        &cache,
-        &mut wallet,
-        batch_size,
-    )
-    .await?;
+    let mut prior_progress = scan_progress(&wallet, &cache)?;
+    loop {
+        match sync::run(
+            &mut client,
+            &Network::TestNetwork,
+            &cache,
+            &mut wallet,
+            batch_size,
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(sync::Error::Server(status))
+                if matches!(
+                    status.code(),
+                    tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+                ) =>
+            {
+                // The maintained scanner commits complete ranges and wallet
+                // scans locally. A new bridge RPC gets a fresh Tor stream,
+                // attested TLS connection, and ticket; no failed stream or
+                // ambiguous ticket is reused.
+                let current = scan_progress(&wallet, &cache)?;
+                if current.0 >= prior_progress.0
+                    && current.1 >= prior_progress.1
+                    && current != prior_progress
+                {
+                    prior_progress = current;
+                    eprintln!(
+                        "resuming verified wallet scan from wallet_height={} cache_height={}",
+                        current.0, current.1
+                    );
+                    continue;
+                }
+                if status.code() == tonic::Code::DeadlineExceeded && batch_size > 1 {
+                    batch_size = batch_size / 2 + batch_size % 2;
+                    eprintln!(
+                        "verified wallet stream timed out without progress; retry_batch_size={batch_size}"
+                    );
+                    continue;
+                }
+                return Err(Box::new(status));
+            }
+            Err(error) => return Err(Box::new(error)),
+        }
+    }
     let enhanced = enhance::process_snapshot(
         &mut client,
         &mut wallet,
