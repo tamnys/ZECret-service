@@ -1,0 +1,26 @@
+# NU7 upgrade input review, 2026-10-05
+
+The October 5 CVM used Zebra 6.4.2 and reached height 4,421,099. [Zcash Foundation's NU7 guidance](https://zfnd.org/zebra-7-0-0-rc-0-nu7-arrives-on-testnet/) says public Testnet activates NU7 at height 4,465,026 and operators need an upgrade to stay on that chain. The independently observed public [Testnet block 4,468,278](https://testnet.zecblock.com/block/4468278) was beyond activation. The deleted CVM therefore did not prove current-tip wallet support.
+
+## Candidate node artifact (metadata only)
+
+[Zebra `v7.0.0-rc.0`](https://github.com/ZcashFoundation/zebra/releases/tag/v7.0.0-rc.0), GitHub release ID `401443178`, was published `2026-10-02T00:02:03Z`. Its annotated tag object is `bdd432bcd4339274e2b25abef29ed53ef187ed57`, pointing to source commit `6d1e414d6f55e4180d0e47baaa934bf97d5b4fec`. GitHub reports the tag itself unsigned and the commit signature valid. The Linux x86_64 asset is `zebrad-7.0.0-rc.0-x86_64-unknown-linux-gnu.tar.gz`, GitHub asset ID `604416112`, size `67062780`, API SHA-256 `7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2`, created `2026-10-02T00:18:54Z`. An attestation API response contains one in-toto bundle; its signature, workflow, and artifact binding have **not yet been verified**. The published advisory API returned 45 entries; the newest low-severity advisory's machine-readable range is overbroad, while its human-readable text says 6.4.2 patched it. Inspect source and review all applicable advisories before accepting this candidate. The official release notes say it uses state DB v29 and automatically moves compatible v28 data one way; this run's deleted CVM storage is not assumed reusable.
+
+The managed seven-day asset-age gate makes this binary eligible on `2026-10-09T00:18:54Z`. The earlier operator exception named Zebra 6.4.2 and does not apply to this release candidate. The existing `deploy/phala/prepare.py`, release lock, local staging receipt, stock lock, and image smoke workflow pin 6.4.2, so a version-string substitution would fail their integrity checks and is not an upgrade.
+
+## Candidate wallet dependency set (metadata only)
+
+The current lock uses `zcash_protocol 0.10.5`; its [tagged consensus source](https://github.com/zcash/librustzcash/blob/zcash_protocol-0.10.5/components/zcash_protocol/src/consensus.rs) gates NU7 behind an experimental flag and uses placeholder branch ID `0xffffffff`. A current-tip reference wallet cannot claim correct NU7 transaction interpretation with that default build. The tagged [`zcash_protocol 0.11.0-pre.0` source](https://github.com/zcash/librustzcash/blob/zcash_protocol-0.11.0-pre.0/components/zcash_protocol/src/consensus.rs) includes Testnet activation height 4,465,026 and branch ID `0x77190ad9`; its signed tag points to commit `c47c2f5441294700b10cbaf0f8e71e6f3f8d4b7b`. The matching upstream [wallet backend](https://github.com/zcash/librustzcash/blob/zcash_client_backend-0.25.0-pre.0/zcash_client_backend/CHANGELOG.md) and [SQLite](https://github.com/zcash/librustzcash/blob/zcash_client_sqlite-0.23.0-pre.0/zcash_client_sqlite/CHANGELOG.md) prereleases migrate the wallet crate graph and APIs. Their actual integration has not been built or tested here.
+
+| Direct crate | Candidate | crates.io SHA-256 | Published UTC |
+|---|---|---|---|
+| `zcash_protocol` | `0.11.0-pre.0` | `98aeb25d9f741670fd63f9dbf76bca87d87c4fd32e1a7469bc4c43c4d0af09f7` | 2026-10-01 02:23:57 |
+| `zcash_client_backend` | `0.25.0-pre.0` | `d1c2ce1c0d0a353c2c4554bf547c4c41a72adfd2047a37897a50b937798f67df` | 2026-10-02 16:35:59 |
+| `zcash_client_sqlite` | `0.23.0-pre.0` | `2e8954e0ebe6f1850f21e9b1da262ec214e149234db7bf424bc7816324619f2a` | 2026-10-02 16:37:21 |
+| `zcash_primitives` | `0.31.0-pre.0` | `9e2f5bf9a1e5a16612cbbab5a112bcec36a3623d8585da0187dcb58a247bc078` | 2026-10-01 02:25:12 |
+| `zcash_address` | `0.14.0-pre.0` | `43e96e21e873c5a12fcd2ee6b04315e23e8ca4488cf4929c0774483dad24a995` | 2026-10-01 02:24:15 |
+| `zcash_keys` | `0.17.0-pre.0` | `2fc5f0dfdaf6eb7f6252522f7c8f013754dd1ef22aec81c5c065f8704a2af278` | 2026-10-01 15:59:49 |
+
+These are crates.io API identities, not downloaded or locally verified artifacts. The complete transitive set and compiled ABI are unknown until a guarded, locked resolution and build. The same seven-day dependency hold applies to each new crate version. No hold exception has been approved for this candidate set, no image has been built from it, and no new CVM has been created.
+
+Before the next launch: independently verify the Zebra binary and provenance; check advisories and the maintained wallet crate graph; update exact release locks and build scripts; run the wallet and wrapper suites; build and smoke-test a digest-pinned image; quote the selected Phala configuration against the unchanged experiment ledger. The original $50 ceiling, $45 deletion trigger, and 2026-10-07 19:23:35 UTC deletion deadline remain in force until the operator changes them. A new release requires its own measured Phala-trusting approval after live attestation. The provider-independent profile remains blocked.
