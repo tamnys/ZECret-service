@@ -19,7 +19,7 @@ BASE_IMAGE = (
     "a73f032681a26f8b2cb960cd32f355c478612e49ae657b5ca656f2b105fb4d78"
 )
 PUBLIC_HASHES = {
-    "issuer-public.der": "e94e280c9c40835451f3bb967ffe80e01b8ee82062626036b324282f12d86ab8",
+    "issuer-public.der": "7a55fad48f6f6be196cf4ad297c5e698dd871aadcba08480c3d83f83e6b04141",
     "hs_ed25519_public_key": "1497e796f86df39fb93d59e7da9e797a33e1591bf4eb106a89cd4ba464011466",
     "issuer-hostname": "4242db6234340f8e558567e96443ed94eeeefff7127c2d6f046669ebe0928109",
 }
