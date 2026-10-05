@@ -2,9 +2,11 @@
 
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("check-cargo-git-source.py")
@@ -103,6 +105,32 @@ class GitSourceGateTests(unittest.TestCase):
     def test_duplicate_json_key_is_rejected(self):
         with self.assertRaisesRegex(gate.Refusal, "duplicate GitHub API JSON key"):
             gate.unique_json_object([("sha", gate.COMMIT), ("sha", "0" * 40)])
+
+    def test_workflow_token_authenticates_only_reviewed_api_paths(self):
+        class Response:
+            status = 200
+            url = gate.API + f"git/commits/{gate.COMMIT}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(commit()).encode()
+
+        opener = mock.Mock()
+        opener.open.return_value = Response()
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "synthetic-token"}), \
+                mock.patch.object(gate.urllib.request, "build_opener", return_value=opener):
+            self.assertEqual(gate.github_json(f"git/commits/{gate.COMMIT}"), commit())
+            with self.assertRaisesRegex(gate.Refusal, "unreviewed GitHub API path"):
+                gate.github_json("git/commits/changed")
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer synthetic-token")
+        self.assertEqual(request.full_url, Response.url)
+        opener.open.assert_called_once()
 
 
 if __name__ == "__main__":
