@@ -3,7 +3,7 @@
 
 Preflight reads only official GitHub release/tag/advisory metadata. Staging
 accepts an already-downloaded local archive after the policy hold, or with the
-explicit v6.4.2 local-only exception, verifies it with a separately pinned
+explicit v7.0.0-rc.0 local staging exception, verifies it with a separately pinned
 GitHub CLI, and emits an unapproved diagnostic input.
 Neither command downloads release assets, builds an image, or approves privacy.
 """
@@ -28,17 +28,17 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = ROOT / "deploy/gcp/zebra-release.lock.json"
-BUNDLE_PATH = ROOT / "records/zebra-v642-attestation-bundle.json"
+BUNDLE_PATH = ROOT / "records/zebra-v700rc0-attestation-bundle.json"
 API = "https://api.github.com/repos/ZcashFoundation/zebra"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 TAR_MEMBERS = {"zebrad", "LICENSE-APACHE", "LICENSE-MIT", "README.md"}
 LOCAL_HOLD_EXCEPTION = {
     "scope": "local-stage-and-image-context-only",
-    "release_id": 396882484,
-    "tag": "v6.4.2",
-    "asset_id": 589132406,
-    "asset_sha256": "505cab2c616dac1a5bc1c414716206a775f38f41ca6f70a60729df40c29e7b8b",
+    "release_id": 401443178,
+    "tag": "v7.0.0-rc.0",
+    "asset_id": 604416112,
+    "asset_sha256": "7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2",
 }
 
 
@@ -95,7 +95,7 @@ def load_lock():
             or lock["schema_version"] != 1
             or lock["status"] != "reviewed-metadata-only-unapproved"
             or lock["repository"] != "ZcashFoundation/zebra"
-            or lock["tag"] != "v6.4.2"
+            or lock["tag"] != "v7.0.0-rc.0"
             or lock["minimum_age_days"] != 7
             or lock["signer_workflow"] !=
             "ZcashFoundation/zebra/.github/workflows/zfnd-release-binaries.yml"
@@ -111,7 +111,7 @@ def load_lock():
     if (not isinstance(asset, dict)
             or set(asset) != {"id", "name", "size", "sha256", "created_at", "updated_at"}
             or type(asset["id"]) is not int or asset["id"] <= 0
-            or asset["name"] != "zebrad-6.4.2-x86_64-unknown-linux-gnu.tar.gz"
+            or asset["name"] != "zebrad-7.0.0-rc.0-x86_64-unknown-linux-gnu.tar.gz"
             or type(asset["size"]) is not int or asset["size"] <= 0
             or not SHA256.fullmatch(asset["sha256"])):
         raise ValueError("reviewed x86_64 asset identity missing")
@@ -445,7 +445,7 @@ def main():
     staging.add_argument("--archive", required=True, type=Path)
     staging.add_argument("--verifier", required=True, type=Path)
     staging.add_argument("--output", required=True, type=Path)
-    staging.add_argument("--allow-v642-local-hold-exception", action="store_true")
+    staging.add_argument("--allow-nu7-local-hold-exception", action="store_true")
     args = parser.parse_args()
     try:
         lock, lock_sha256 = load_lock()
@@ -453,7 +453,7 @@ def main():
             report = live_preflight(lock)
         else:
             report = stage(lock, lock_sha256, args.archive, args.verifier, args.output,
-                           args.allow_v642_local_hold_exception)
+                           args.allow_nu7_local_hold_exception)
         print(json.dumps(report, indent=2))
         return 0 if report["status"] != "held-metadata-only-unapproved" else 2
     except (OSError, ValueError, TypeError, KeyError, tarfile.TarError) as error:

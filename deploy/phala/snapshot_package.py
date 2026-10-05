@@ -13,7 +13,7 @@ import zipfile
 
 
 HERE = Path(__file__).resolve().parent
-LOCK_SHA256 = "a05312fe3fa447e33c48c94c512e7e6e3fcade103f9204a27516a1fdcdcc70ac"
+LOCK_SHA256 = "be9d8781d86b9dff803f18d5caf0fc56ec5b3457bca0731fc444f8a4c62960fe"
 CONTEXT_FILES = ("snapshot_import.py", "snapshot.lock.json",
                  "vendor/zstandard.whl")
 
@@ -47,8 +47,12 @@ def reviewed_lock():
             or value.get("target_cache_dir") != "/var/lib/zebra"
             or value.get("archive_extraction_path") != "state/v28/testnet"
             or value.get("database_format_major_version") != 28
+            or value.get("target_database_format_major_version") != 29
+            or value.get("target_zebrad_version") != "7.0.0-rc.0"
             or value.get("target_zebrad_source_commit") !=
-            "e3eef2f37c35127ad1769f19a1ebc7eaa5d5d291"
+            "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
+            or value.get("target_database_format_source_sha256") !=
+            "33d76f958cf88ddcdaae22675f2d8c9929542ea3ef9ae77d78f361c273abb7c8"
             or wheel.get("package") != "zstandard"
             or wheel.get("version") != "0.25.0"
             or wheel.get("wheel_filename") !=

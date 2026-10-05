@@ -19,8 +19,8 @@ snapshot_package = importlib.util.module_from_spec(snapshot_spec)
 snapshot_spec.loader.exec_module(snapshot_package)
 STOCK_LOCK = HERE / "stock-candidate.lock.json"
 ZEBRA_LOCK = ROOT / "deploy/gcp/zebra-release.lock.json"
-REVIEWED_ZEBRA_RECEIPT = ROOT / "records/zebra-v642-local-staging-receipt.json"
-STOCK_LOCK_SHA256 = "1f2f1936ec2c991162e8849bd907b72fe501a80b8f3863096dc21fa8992d170d"
+REVIEWED_ZEBRA_RECEIPT = ROOT / "records/zebra-v700rc0-local-staging-receipt.json"
+STOCK_LOCK_SHA256 = "901015ea91a47e471816475651d9d8095203e314a227eda837b923d934f7cf69"
 BASE_IMAGE = ("docker.io/library/python:3.13.15-slim-trixie@sha256:"
               "37134a49d21d2120e4c4d73bb76f8a4ab9aef31f096f7ec2ead48c2feead4332")
 # Created annotation in the pinned linux/amd64 OCI manifest.
@@ -37,10 +37,10 @@ IMAGE_REF = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 LOCAL_HOLD_EXCEPTION = {
     "scope": "local-stage-and-image-context-only",
-    "release_id": 396882484,
-    "tag": "v6.4.2",
-    "asset_id": 589132406,
-    "asset_sha256": "505cab2c616dac1a5bc1c414716206a775f38f41ca6f70a60729df40c29e7b8b",
+    "release_id": 401443178,
+    "tag": "v7.0.0-rc.0",
+    "asset_id": 604416112,
+    "asset_sha256": "7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2",
 }
 
 
@@ -106,10 +106,10 @@ def locks():
             or stock.get("private_accepted") is not False
             or stock.get("deployment_enabled") is not False
             or zebra.get("status") != "reviewed-metadata-only-unapproved"
-            or zebra.get("tag") != "v6.4.2"
+            or zebra.get("tag") != "v7.0.0-rc.0"
             or zebra.get("minimum_age_days") != 7
             or zebra.get("asset", {}).get("sha256") !=
-            "505cab2c616dac1a5bc1c414716206a775f38f41ca6f70a60729df40c29e7b8b"):
+            "7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2"):
         raise ValueError("stock or Zebra identity differs from reviewed candidate")
     return stock, zebra, digest(zebra_bytes)
 
@@ -204,7 +204,7 @@ def checked_stage_receipt(stock, zebra, lock_digest, receipt, receipt_sha256,
 def image_context(args):
     stock, zebra, lock_digest = locks()
     eligible, eligible_at = eligibility(zebra)
-    if not eligible and not getattr(args, "allow_v642_local_hold_exception", False):
+    if not eligible and not getattr(args, "allow_nu7_local_hold_exception", False):
         raise ValueError(f"Zebra release hold ends {eligible_at.isoformat()}")
     if (args.base_image != BASE_IMAGE
             or args.base_image_created_at != BASE_IMAGE_CREATED_AT):
@@ -363,7 +363,7 @@ def launch_documents(args):
     stock, zebra, lock_digest = locks()
     snapshot_lock, _ = snapshot_package.reviewed_lock()
     eligible, eligible_at = eligibility(zebra)
-    if not eligible and not getattr(args, "allow_v642_local_hold_exception", False):
+    if not eligible and not getattr(args, "allow_nu7_local_hold_exception", False):
         raise ValueError(f"Zebra release hold ends {eligible_at.isoformat()}")
     if not IMAGE_REF.fullmatch(args.image):
         raise ValueError("immutable application image reference required")
@@ -496,7 +496,7 @@ def main():
     image.add_argument("--base-image", required=True)
     image.add_argument("--base-image-created-at", required=True)
     image.add_argument("--output", required=True, type=Path)
-    image.add_argument("--allow-v642-local-hold-exception", action="store_true")
+    image.add_argument("--allow-nu7-local-hold-exception", action="store_true")
     check_image = commands.add_parser("check-image-context")
     check_image.add_argument("--context", required=True, type=Path)
     launch = commands.add_parser("launch-documents")
@@ -504,7 +504,7 @@ def main():
     launch.add_argument("--image-inputs", required=True, type=Path)
     launch.add_argument("--runtime", required=True, type=Path)
     launch.add_argument("--output", required=True, type=Path)
-    launch.add_argument("--allow-v642-local-hold-exception", action="store_true")
+    launch.add_argument("--allow-nu7-local-hold-exception", action="store_true")
     args = parser.parse_args()
     try:
         stock, zebra, _ = locks()

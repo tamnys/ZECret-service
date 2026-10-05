@@ -1,15 +1,15 @@
 # Package checkpoint notes
 
-The Phala package reuses the reviewed Zebra v6.4.2 metadata lock at
+The Phala package reuses the reviewed Zebra v7.0.0-rc.0 metadata lock at
 `deploy/gcp/zebra-release.lock.json` and the stage-only verifier at
 `tools/gcp-guest/verify_zebra_release.py`. This is generic Zebra artifact
-provenance, not a GCP deploy dependency. The explicit v6.4.2 exception permits
+provenance, not a GCP deploy dependency. The explicit NU7 exception permits
 only local staging, image-context preparation, and launch-document rendering
 while the seven-day hold is active. It is bound to the exact release asset ID
 and digest in the stage receipt and copied into the local image context. The
-separately authorized [native image smoke](../../records/phala-native-image-smoke.md)
-built and ran that exact candidate locally without publishing it; it did not
-broaden the stage receipt into a deployment or private-mode approval. The
+earlier [native image smoke](../../records/phala-native-image-smoke.md)
+covered Zebra 6.4.2; the Zebra 7 image still needs its own build and runtime
+check. The stage receipt does not approve deployment or private mode. The
 launch renderer rechecks that complete context and requires the pinned stage
 receipt digest and exception identity; the GCP image runner retains its age
 check. The verified stage receipt is

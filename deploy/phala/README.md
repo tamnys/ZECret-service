@@ -2,9 +2,9 @@
 
 This directory prepares local image inputs and an exact dstack launch document
 for a public Zebra testnet preview. It makes no Phala API call, creates no CVM,
-and never approves private requests. The Zebra v6.4.2 x86_64 asset normally
+and never approves private requests. The Zebra v7.0.0-rc.0 x86_64 asset normally
 remains inside the repository's seven-day release hold until
-`2026-10-02T19:59:10Z`. The approved exception applies only to exact-asset
+`2026-10-09T00:18:54Z`. The approved exception applies only to exact-asset
 local staging, image-context preparation, and launch-document rendering. Run
 `python3 deploy/phala/prepare.py status` to inspect the normal age gate.
 
@@ -20,7 +20,7 @@ The image recipe pins the Linux amd64
 manifest and the two native Rust binary hashes. It also requires a checked
 Linux x86_64 `zebrad` and the Zebra staging receipt from
 `tools/gcp-guest/verify_zebra_release.py stage`. During the Zebra hold, pass
-`--allow-v642-local-hold-exception` to `stage`, `prepare.py image-context`,
+`--allow-nu7-local-hold-exception` to `stage`, `prepare.py image-context`,
 and `prepare.py launch-documents`. The latter requires the checked image
 context and its exact staged receipt. `image-context` also requires
 `--snapshot-wheel` pointing to the exact Linux x86_64 CPython 3.13 wheel
@@ -45,8 +45,11 @@ archive over HTTPS, checks its exact size and SHA-256, and imports its
 space for both the compressed download and extracted database during import.
 An interrupted download or import is retried at the next start; an existing
 state directory without the expected import marker blocks startup. Once
-imported, the marker permits reuse on later starts and Zebra synchronizes from
-the snapshot tip. The marker does not revalidate all existing database bytes.
+imported, the marker permits reuse on later starts. Zebra 7 migrates the v28
+database to v29 on startup and then synchronizes from the snapshot tip. This
+one-way migration needs a fresh-volume runtime check before using the image;
+do not reuse the migrated volume with Zebra 6.4.2. The marker does not
+revalidate all existing database bytes.
 The snapshot and its manifest come from the same publisher, and the manifest
 is **unsigned**. Their checksums pin the selected bytes but are not an
 independent authenticity proof or a private-mode approval. Treat the imported

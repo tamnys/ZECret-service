@@ -36,9 +36,9 @@ class PackageTests(unittest.TestCase):
     def test_hold_blocks_image_context_before_creating_output(self):
         _, zebra, _ = prepare.locks()
         eligible, due = prepare.eligibility(
-            zebra, datetime(2026, 9, 29, tzinfo=timezone.utc))
+            zebra, datetime(2026, 10, 5, tzinfo=timezone.utc))
         self.assertFalse(eligible)
-        self.assertEqual(due.isoformat(), "2026-10-02T19:59:10+00:00")
+        self.assertEqual(due.isoformat(), "2026-10-09T00:18:54+00:00")
         args = argparse.Namespace(output=self.root / "context")
         with patch.object(prepare, "eligibility", return_value=(False, due)):
             with self.assertRaisesRegex(ValueError, "release hold"):
@@ -180,7 +180,7 @@ class PackageTests(unittest.TestCase):
             base_image=prepare.BASE_IMAGE,
             base_image_created_at=prepare.BASE_IMAGE_CREATED_AT,
             output=self.root / "context",
-            allow_v642_local_hold_exception=True,
+            allow_nu7_local_hold_exception=True,
         )
         with (patch.object(prepare, "locks", return_value=(stock, zebra, lock_digest)),
               patch.object(prepare, "NATIVE_BINARIES_SHA256", native),
@@ -220,11 +220,11 @@ class PackageTests(unittest.TestCase):
                 image_inputs=inputs_path,
                 runtime=runtime,
                 output=self.root / "launch",
-                allow_v642_local_hold_exception=False,
+                allow_nu7_local_hold_exception=False,
             )
             with self.assertRaisesRegex(ValueError, "release hold"):
                 prepare.launch_documents(render_args)
-            render_args.allow_v642_local_hold_exception = True
+            render_args.allow_nu7_local_hold_exception = True
             inputs = prepare.parse_json(inputs_bytes)
             inputs["zebra_stage_receipt_sha256"] = "0" * 64
             inputs_path.write_bytes(prepare.canonical(inputs))
