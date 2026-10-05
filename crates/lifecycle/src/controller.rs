@@ -102,6 +102,34 @@ pub struct TrackedCvm {
     pub compute_and_disk_microusd_per_hour: u64,
 }
 
+/// Operator-reviewed split of an already tracked combined rate. This cannot
+/// reduce the historical cost floor or establish deletion/billing finality.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateBasisEntry {
+    pub cvm_id: String,
+    pub compute_microusd_per_hour: u64,
+    pub storage_microusd_per_hour: u64,
+    pub deletion_basis: ComputeStopBasis,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeStopBasis {
+    TrackedDelete204,
+    OperatorAssertedManualDeletion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateBasisEvent {
+    pub source_generation: u64,
+    pub committed_generation: u64,
+    pub recorded_at_unix_seconds: u64,
+    pub quote_reference: String,
+    pub entries: Vec<RateBasisEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrackedResource {
@@ -219,6 +247,8 @@ struct LedgerData {
     deletion_intents: Vec<DeletionIntentRecord>,
     #[serde(default)]
     observations: Vec<ObservationRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rate_basis_events: Vec<RateBasisEvent>,
 }
 
 /// Fields are private; attempt APIs cannot replace the original policy or
@@ -265,6 +295,7 @@ impl ExperimentLedger {
             usage: BTreeMap::new(),
             deletion_intents: Vec::new(),
             observations: Vec::new(),
+            rate_basis_events: Vec::new(),
         }))
     }
 
@@ -278,6 +309,10 @@ impl ExperimentLedger {
 
     pub fn observations(&self) -> &[ObservationRecord] {
         &self.0.observations
+    }
+
+    pub fn rate_basis_events(&self) -> &[RateBasisEvent] {
+        &self.0.rate_basis_events
     }
 
     pub fn conservative_cost_floor_microusd(&self) -> u64 {
@@ -319,8 +354,41 @@ impl ExperimentLedger {
         // Validate the entire successor before changing this ledger. Provider
         // usage is retained as unjoined data and never enters accepted charges.
         let mut next = self.clone();
-        next.advance_cost(record.recorded_at_unix_seconds)?;
+        let recorded_at = record.recorded_at_unix_seconds;
         next.0.observations.push(record);
+        // A newly observed reappearance can restore the full compute rate.
+        // Recompute after installing this observation so the retained floor
+        // captures that increase in the same durable transition.
+        next.advance_cost(recorded_at)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn append_rate_basis(
+        &mut self,
+        source_generation: u64,
+        quote_reference: String,
+        entries: Vec<RateBasisEntry>,
+        now: u64,
+    ) -> Result<(), LifecycleError> {
+        self.validate()?;
+        let event = RateBasisEvent {
+            source_generation,
+            committed_generation: source_generation
+                .checked_add(1)
+                .ok_or(LifecycleError("rate basis generation overflow"))?,
+            recorded_at_unix_seconds: now,
+            quote_reference,
+            entries,
+        };
+        let mut next = self.clone();
+        next.0.rate_basis_events.push(event);
+        // Install the complete reviewed batch before advancing the clock. A
+        // one-resource-at-a-time update would irreversibly accrue the old full
+        // rate for the other deleted resources in the same batch.
+        next.advance_cost(now)?;
         next.validate()?;
         *self = next;
         Ok(())
@@ -450,6 +518,15 @@ impl ExperimentLedger {
                 "observation journal would alter prior history",
             ));
         }
+        if !self
+            .0
+            .rate_basis_events
+            .starts_with(&previous.0.rate_basis_events)
+        {
+            return Err(LifecycleError(
+                "rate basis journal would alter prior history",
+            ));
+        }
         if self.0.deletion_intents.len() < previous.0.deletion_intents.len()
             || previous
                 .0
@@ -552,6 +629,40 @@ impl ExperimentLedger {
                 return Err(LifecycleError("invalid billing record key"));
             }
         }
+        let mut rated = BTreeSet::new();
+        let mut prior_rate_generation = None;
+        let mut prior_rate_time = self.0.binding.started_at_unix_seconds;
+        for event in &self.0.rate_basis_events {
+            if event.source_generation.checked_add(1) != Some(event.committed_generation)
+                || prior_rate_generation.is_some_and(|prior| prior >= event.committed_generation)
+                || event.recorded_at_unix_seconds < prior_rate_time
+                || event.recorded_at_unix_seconds > self.0.last_observed_at_unix_seconds
+                || !nonempty(&event.quote_reference)
+                || event.entries.is_empty()
+            {
+                return Err(LifecycleError("invalid rate basis event"));
+            }
+            for entry in &event.entries {
+                let resource = self
+                    .0
+                    .resources
+                    .get(&entry.cvm_id)
+                    .ok_or(LifecycleError("rate basis target is not tracked"))?;
+                if !rated.insert(entry.cvm_id.as_str())
+                    || entry.compute_microusd_per_hour == 0
+                    || entry.storage_microusd_per_hour == 0
+                    || entry
+                        .compute_microusd_per_hour
+                        .checked_add(entry.storage_microusd_per_hour)
+                        != Some(resource.cvm.compute_and_disk_microusd_per_hour)
+                    || resource.cvm.created_at_unix_seconds > event.recorded_at_unix_seconds
+                {
+                    return Err(LifecycleError("invalid rate basis for tracked CVM"));
+                }
+            }
+            prior_rate_generation = Some(event.committed_generation);
+            prior_rate_time = event.recorded_at_unix_seconds;
+        }
         let mut deletion_targets: BTreeMap<&str, &DeletionIntentRecord> = BTreeMap::new();
         let mut prior_generation = None;
         for intent in &self.0.deletion_intents {
@@ -613,7 +724,7 @@ impl ExperimentLedger {
         let mut prior_recorded = self.0.binding.started_at_unix_seconds;
         let mut prior_floor = self.0.initial_cost_microusd;
         let mut prior_rows: BTreeMap<(&str, &str), &ObservedUsage> = BTreeMap::new();
-        for record in &self.0.observations {
+        for (index, record) in self.0.observations.iter().enumerate() {
             record.validate(self.workspace_id())?;
             if record.usage_start_unix_seconds != self.0.binding.started_at_unix_seconds
                 || record.usage_cutoff_unix_seconds < prior_recorded
@@ -637,21 +748,14 @@ impl ExperimentLedger {
             }
             // Use the resources actually retained by this earlier record.
             // Resources added later must not retroactively invalidate it.
-            let modeled_at_finish =
-                record
-                    .tracked
-                    .iter()
-                    .try_fold(self.0.initial_cost_microusd, |sum, observed| {
-                        add(
-                            sum,
-                            duration_cost(
-                                observed.target.compute_and_disk_microusd_per_hour,
-                                record
-                                    .finished_at_unix_seconds
-                                    .saturating_sub(observed.target.created_at_unix_seconds),
-                            )?,
-                        )
-                    })?;
+            let modeled_at_finish = self.modeled_cost_for_targets(
+                record.tracked.iter().map(|observed| &observed.target),
+                // The scan's quoted floor came from its source snapshot, before
+                // this observation could change the compute-stop assessment.
+                &self.0.observations[..index],
+                record.source_generation,
+                record.finished_at_unix_seconds,
+            )?;
             if record.known_cost_floor_microusd < modeled_at_finish {
                 return Err(LifecycleError("observation omits its known modeled cost"));
             }
@@ -808,21 +912,100 @@ impl ExperimentLedger {
             })
     }
 
-    fn modeled_cost(&self, now: u64) -> Result<u64, LifecycleError> {
-        self.0
-            .resources
-            .values()
-            .try_fold(self.0.initial_cost_microusd, |sum, resource| {
-                // No deletion/billing completion proof exists here. Preserve the
-                // modeled floor for every attempt, including stopped/absent CVMs.
-                add(
-                    sum,
+    fn compute_stop_at(
+        &self,
+        cvm: &TrackedCvm,
+        basis: &ComputeStopBasis,
+        observations: &[ObservationRecord],
+        now: u64,
+    ) -> Option<u64> {
+        let mut seen_present = false;
+        let mut first_absence = None;
+        for record in observations
+            .iter()
+            .filter(|record| record.finished_at_unix_seconds <= now)
+        {
+            let Some(observed) = record
+                .tracked
+                .iter()
+                .find(|observed| observed.target.cvm_id == cvm.cvm_id)
+            else {
+                continue;
+            };
+            if observed.inventory.is_some()
+                || matches!(&observed.detail, ObservedDetail::Present(_))
+            {
+                // A resource that returns after an apparent deletion gets the
+                // full rate again; no earlier absence can discount it.
+                if first_absence.is_some() {
+                    return None;
+                }
+                seen_present = true;
+                continue;
+            }
+            if first_absence.is_none()
+                && observed.inventory.is_none()
+                && matches!(&observed.detail, ObservedDetail::NotFound)
+                && match basis {
+                    ComputeStopBasis::OperatorAssertedManualDeletion => seen_present,
+                    ComputeStopBasis::TrackedDelete204 => {
+                        self.0.deletion_intents.iter().any(|intent| {
+                            intent.target.cvm_id == cvm.cvm_id
+                                && intent.outcome.as_ref().is_some_and(|outcome| {
+                                    matches!(outcome.outcome, DeletionOutcome::Initiated204)
+                                        && outcome.recorded_at_unix_seconds
+                                            <= record.finished_at_unix_seconds
+                                })
+                        })
+                    }
+                }
+            {
+                first_absence = Some(record.finished_at_unix_seconds);
+            }
+        }
+        first_absence
+    }
+
+    fn modeled_cost_for_targets<'a>(
+        &self,
+        mut targets: impl Iterator<Item = &'a TrackedCvm>,
+        observations: &[ObservationRecord],
+        source_generation: u64,
+        now: u64,
+    ) -> Result<u64, LifecycleError> {
+        targets.try_fold(self.0.initial_cost_microusd, |sum, cvm| {
+            let seconds = now.saturating_sub(cvm.created_at_unix_seconds);
+            let basis = self
+                .0
+                .rate_basis_events
+                .iter()
+                .filter(|event| event.committed_generation <= source_generation)
+                .flat_map(|event| &event.entries)
+                .find(|entry| entry.cvm_id == cvm.cvm_id);
+            let cost = match basis.and_then(|basis| {
+                self.compute_stop_at(cvm, &basis.deletion_basis, observations, now)
+                    .map(|stop| (basis, stop))
+            }) {
+                Some((basis, stop)) => add(
                     duration_cost(
-                        resource.cvm.compute_and_disk_microusd_per_hour,
-                        now.saturating_sub(resource.cvm.created_at_unix_seconds),
+                        cvm.compute_and_disk_microusd_per_hour,
+                        stop.saturating_sub(cvm.created_at_unix_seconds),
                     )?,
-                )
-            })
+                    duration_cost(basis.storage_microusd_per_hour, now.saturating_sub(stop))?,
+                )?,
+                None => duration_cost(cvm.compute_and_disk_microusd_per_hour, seconds)?,
+            };
+            add(sum, cost)
+        })
+    }
+
+    fn modeled_cost(&self, now: u64) -> Result<u64, LifecycleError> {
+        self.modeled_cost_for_targets(
+            self.0.resources.values().map(|resource| &resource.cvm),
+            &self.0.observations,
+            u64::MAX,
+            now,
+        )
     }
 
     fn advance_cost(&mut self, now: u64) -> Result<(), LifecycleError> {
@@ -1176,6 +1359,7 @@ pub fn tick_mock(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reconciliation::{ObservedCvm, ObservedTarget};
 
     const START: u64 = 1_000;
     fn ledger() -> ExperimentLedger {
@@ -1201,6 +1385,135 @@ mod tests {
             created_at_unix_seconds: created,
             compute_and_disk_microusd_per_hour: 243_120,
         }
+    }
+
+    fn rate(id: &str) -> RateBasisEntry {
+        RateBasisEntry {
+            cvm_id: id.into(),
+            compute_microusd_per_hour: 232_000,
+            storage_microusd_per_hour: 11_120,
+            deletion_basis: ComputeStopBasis::TrackedDelete204,
+        }
+    }
+    fn observation(
+        ledger: &ExperimentLedger,
+        source_generation: u64,
+        at: u64,
+        present: bool,
+    ) -> ObservationRecord {
+        let target = ledger.0.resources["one"].cvm.clone();
+        let cvm = ObservedCvm {
+            id: target.cvm_id.clone(),
+            status: "running".into(),
+            app_id: Some(target.app_id.clone()),
+            instance_id: target.instance_id.clone(),
+            vm_uuid: None,
+            workspace_id: Some("workspace".into()),
+            created_at: None,
+            deleted_at: None,
+        };
+        ObservationRecord {
+            source_generation,
+            committed_generation: source_generation + 1,
+            usage_start_unix_seconds: START,
+            usage_cutoff_unix_seconds: at,
+            finished_at_unix_seconds: at,
+            recorded_at_unix_seconds: at,
+            known_cost_floor_microusd: ledger.planning_cost_at(at).unwrap(),
+            inventory_total: u64::from(present),
+            inventory_pages: u64::from(present),
+            untracked_inventory_ids: Vec::new(),
+            tracked: vec![ObservedTarget {
+                target,
+                inventory: present.then(|| cvm.clone()),
+                detail: if present {
+                    ObservedDetail::Present(cvm)
+                } else {
+                    ObservedDetail::NotFound
+                },
+            }],
+            usage_by_app: BTreeMap::from([("app".into(), Vec::new())]),
+        }
+    }
+
+    #[test]
+    fn confirmed_absence_stops_only_compute_and_reappearance_restores_full_rate() {
+        let mut ledger = ledger();
+        ledger
+            .append_observation(observation(&ledger, 1, START + 3600, true))
+            .unwrap();
+        let intent = ledger
+            .append_deletion_intent(2, "workspace", "one", START + 3600)
+            .unwrap();
+        ledger
+            .finish_deletion_intent(intent, DeletionOutcome::Initiated204, START + 3600)
+            .unwrap();
+        ledger
+            .append_observation(observation(&ledger, 3, START + 7200, false))
+            .unwrap();
+        assert_eq!(ledger.planning_cost_at(START + 10_800).unwrap(), 729_360);
+        ledger
+            .append_rate_basis(
+                4,
+                "reviewed Phala tdx.large 80 GB quote".into(),
+                vec![rate("one")],
+                START + 7200,
+            )
+            .unwrap();
+        assert_eq!(ledger.conservative_cost_floor_microusd(), 486_240);
+        assert_eq!(ledger.planning_cost_at(START + 10_800).unwrap(), 497_360);
+        ledger
+            .append_observation(observation(&ledger, 5, START + 10_800, true))
+            .unwrap();
+        assert_eq!(ledger.conservative_cost_floor_microusd(), 729_360);
+        assert_eq!(ledger.planning_cost_at(START + 14_400).unwrap(), 972_480);
+    }
+
+    #[test]
+    fn unexplained_absence_and_invalid_rate_splits_never_discount_compute() {
+        let mut ledger = ledger();
+        ledger
+            .append_observation(observation(&ledger, 1, START + 3600, false))
+            .unwrap();
+        let mut wrong = rate("one");
+        wrong.storage_microusd_per_hour -= 1;
+        assert!(
+            ledger
+                .append_rate_basis(2, "quote".into(), vec![wrong], START + 3600)
+                .is_err()
+        );
+        assert!(ledger.rate_basis_events().is_empty());
+        ledger
+            .append_rate_basis(2, "quote".into(), vec![rate("one")], START + 3600)
+            .unwrap();
+        assert_eq!(ledger.planning_cost_at(START + 7200).unwrap(), 486_240);
+        assert!(
+            ledger
+                .append_rate_basis(3, "quote".into(), vec![rate("one")], START + 3600)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn manual_delete_assertion_still_requires_prior_presence_and_complete_absence() {
+        let mut ledger = ledger();
+        ledger
+            .append_observation(observation(&ledger, 1, START + 3600, true))
+            .unwrap();
+        ledger
+            .append_observation(observation(&ledger, 2, START + 7200, false))
+            .unwrap();
+        let mut manual = rate("one");
+        manual.deletion_basis = ComputeStopBasis::OperatorAssertedManualDeletion;
+        ledger
+            .append_rate_basis(
+                3,
+                "manual deletion and reviewed quote".into(),
+                vec![manual],
+                START + 7200,
+            )
+            .unwrap();
+        assert_eq!(ledger.planning_cost_at(START + 10_800).unwrap(), 497_360);
     }
     fn page(ids: &[&str]) -> InventoryPage {
         InventoryPage {

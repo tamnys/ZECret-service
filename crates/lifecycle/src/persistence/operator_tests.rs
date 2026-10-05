@@ -76,6 +76,72 @@ fn attempt(store: &mut LedgerStore, generation: u64, id: &str, now: u64) {
 }
 
 #[test]
+fn reviewed_rate_basis_is_one_append_only_ledger_transition() {
+    let temp = Temp::new();
+    let mut store = temp.initialize(0);
+    attempt(&mut store, 0, "first", START);
+    store
+        .record_cvm_at_with_hook(1, "first", cvm("one", START), START, &mut |_| Ok(()))
+        .unwrap();
+    let entry = RateBasisEntry {
+        cvm_id: "one".into(),
+        compute_microusd_per_hour: 232_000,
+        storage_microusd_per_hour: 11_120,
+        deletion_basis: crate::controller::ComputeStopBasis::TrackedDelete204,
+    };
+    let mut forged = store.ledger().unwrap().clone();
+    forged
+        .append_rate_basis(2, "reviewed quote".into(), vec![entry.clone()], START + 1)
+        .unwrap();
+    assert_eq!(store.commit(&forged), Err(StoreError::InvalidState));
+    assert_eq!(
+        store.inspect_at(START + 1).unwrap().reference.generation(),
+        2
+    );
+    store
+        .record_rate_basis_at_with_hook(
+            2,
+            "reviewed quote".into(),
+            vec![entry.clone()],
+            START + 1,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        store.inspect_at(START + 1).unwrap().reference.generation(),
+        3
+    );
+    assert_eq!(
+        store.ledger().unwrap().rate_basis_events()[0].entries,
+        [entry.clone()]
+    );
+    let prior = temp.bytes();
+    assert!(
+        store
+            .record_rate_basis_at_with_hook(
+                2,
+                "reviewed quote".into(),
+                vec![entry],
+                START + 1,
+                &mut |_| Ok(()),
+            )
+            .is_err()
+    );
+    assert_eq!(prior, temp.bytes());
+    drop(store);
+    let reopened = LedgerStore::open(&temp.original()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_at(START + 1)
+            .unwrap()
+            .reference
+            .generation(),
+        3
+    );
+    assert_eq!(prior, temp.bytes());
+}
+
+#[test]
 fn public_operator_workflow_uses_actual_time_and_reopens_committed_history() {
     let temp = Temp::new();
     let before = wall_clock().unwrap();

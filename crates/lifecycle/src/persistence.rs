@@ -8,7 +8,7 @@ use crate::{
     LifecycleError,
     controller::{
         DeletionIntentRecord, DeletionOutcome, DeletionRetryRecord, ExperimentBinding,
-        ExperimentLedger, TrackedCvm,
+        ExperimentLedger, RateBasisEntry, TrackedCvm,
     },
     observation::ReadObservation,
     reconciliation::ObservationRecord,
@@ -507,6 +507,39 @@ impl LedgerStore {
         self.planning_reference()
     }
 
+    /// Append one reviewed rate split for tracked resources. The exact prior
+    /// ledger generation and every existing rate identity remain immutable.
+    /// This is operator pricing evidence, not provider billing finality.
+    pub fn record_rate_basis(
+        &mut self,
+        expected_generation: u64,
+        quote_reference: String,
+        entries: Vec<RateBasisEntry>,
+    ) -> Result<CommittedLedgerReference, StoreError> {
+        self.record_rate_basis_at_with_hook(
+            expected_generation,
+            quote_reference,
+            entries,
+            wall_clock()?,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn record_rate_basis_at_with_hook(
+        &mut self,
+        expected_generation: u64,
+        quote_reference: String,
+        entries: Vec<RateBasisEntry>,
+        now: u64,
+        hook: &mut impl FnMut(CommitPoint) -> Result<(), StoreError>,
+    ) -> Result<CommittedLedgerReference, StoreError> {
+        self.require_generation(expected_generation)?;
+        let mut next = self.ledger()?.clone();
+        next.append_rate_basis(expected_generation, quote_reference, entries, now)?;
+        self.commit_with_hook(&next, hook)?;
+        self.planning_reference()
+    }
+
     fn require_generation(&self, expected_generation: u64) -> Result<(), StoreError> {
         if self.planning_reference()?.generation() != expected_generation {
             return Err(StoreError::InvalidState);
@@ -803,6 +836,7 @@ impl LedgerStore {
         // observation, intent, or pending outcome through generic persistence.
         if next.deletion_intents() != self.ledger()?.deletion_intents()
             || next.observations() != self.ledger()?.observations()
+            || next.rate_basis_events() != self.ledger()?.rate_basis_events()
         {
             return Err(StoreError::InvalidState);
         }
@@ -826,6 +860,7 @@ impl LedgerStore {
         next.validate_successor(&self.ledger)?;
         validate_journal_transition(&self.ledger, next, self.generation)?;
         validate_observation_transition(&self.ledger, next, self.generation)?;
+        validate_rate_basis_transition(&self.ledger, next, self.generation)?;
         let generation = self
             .generation
             .checked_add(1)
@@ -1009,6 +1044,38 @@ fn validate_observation_transition(
     Ok(())
 }
 
+fn validate_rate_basis_transition(
+    previous: &ExperimentLedger,
+    next: &ExperimentLedger,
+    prior_generation: u64,
+) -> Result<(), StoreError> {
+    let before = previous.rate_basis_events();
+    let after = next.rate_basis_events();
+    if after == before {
+        return Ok(());
+    }
+    if after.len().checked_sub(before.len()) != Some(1) || &after[..before.len()] != before {
+        return Err(StoreError::InvalidState);
+    }
+    let event = after.last().ok_or(StoreError::InvalidState)?;
+    if event.source_generation != prior_generation
+        || Some(event.committed_generation) != prior_generation.checked_add(1)
+    {
+        return Err(StoreError::InvalidState);
+    }
+    let mut expected = previous.clone();
+    expected.append_rate_basis(
+        prior_generation,
+        event.quote_reference.clone(),
+        event.entries.clone(),
+        event.recorded_at_unix_seconds,
+    )?;
+    if json_bytes(&expected)? != json_bytes(next)? {
+        return Err(StoreError::InvalidState);
+    }
+    Ok(())
+}
+
 fn load_history(original: &OriginalRecord) -> Result<(u64, ExperimentLedger, bool), StoreError> {
     let mut snapshots = BTreeMap::new();
     let mut pending = false;
@@ -1044,9 +1111,11 @@ fn load_history(original: &OriginalRecord) -> Result<(u64, ExperimentLedger, boo
             ledger.validate_successor(prior)?;
             validate_journal_transition(prior, &ledger, *prior_generation)?;
             validate_observation_transition(prior, &ledger, *prior_generation)?;
+            validate_rate_basis_transition(prior, &ledger, *prior_generation)?;
         } else if generation != 0
             || !ledger.deletion_intents().is_empty()
             || !ledger.observations().is_empty()
+            || !ledger.rate_basis_events().is_empty()
             || json_bytes(&ledger)?
                 != json_bytes(&ledger_from_raw(
                     &original.initial_ledger,
