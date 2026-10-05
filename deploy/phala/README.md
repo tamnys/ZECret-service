@@ -4,8 +4,9 @@ This directory prepares local image inputs and an exact dstack launch document
 for a public Zebra testnet preview. It makes no Phala API call, creates no CVM,
 and never approves private requests. The Zebra v7.0.0-rc.0 x86_64 asset normally
 remains inside the repository's seven-day release hold until
-`2026-10-09T00:18:54Z`. The approved exception applies only to exact-asset
-local staging, image-context preparation, and launch-document rendering. Run
+`2026-10-09T00:18:54Z`. The approved exact-asset exception permits staging,
+image preparation, and publication for this testnet evaluation; it does not
+approve a private release or authorize a different artifact. Run
 `python3 deploy/phala/prepare.py status` to inspect the normal age gate.
 
 The candidate stock tuple is `dstack-0.5.9-bd369a8c` on `prod9` with
@@ -20,7 +21,7 @@ The image recipe pins the Linux amd64
 manifest and the two native Rust binary hashes. It also requires a checked
 Linux x86_64 `zebrad` and the Zebra staging receipt from
 `tools/gcp-guest/verify_zebra_release.py stage`. During the Zebra hold, pass
-`--allow-nu7-local-hold-exception` to `stage`, `prepare.py image-context`,
+`--allow-nu7-evaluation-hold-exception` to `stage`, `prepare.py image-context`,
 and `prepare.py launch-documents`. The latter requires the checked image
 context and its exact staged receipt. `image-context` also requires
 `--snapshot-wheel` pointing to the exact Linux x86_64 CPython 3.13 wheel

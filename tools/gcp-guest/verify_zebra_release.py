@@ -3,7 +3,7 @@
 
 Preflight reads only official GitHub release/tag/advisory metadata. Staging
 accepts an already-downloaded local archive after the policy hold, or with the
-explicit v7.0.0-rc.0 local staging exception, verifies it with a separately pinned
+explicit v7.0.0-rc.0 testnet evaluation exception, verifies it with a separately pinned
 GitHub CLI, and emits an unapproved diagnostic input.
 Neither command downloads release assets, builds an image, or approves privacy.
 """
@@ -34,7 +34,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 TAR_MEMBERS = {"zebrad", "LICENSE-APACHE", "LICENSE-MIT", "README.md"}
 LOCAL_HOLD_EXCEPTION = {
-    "scope": "local-stage-and-image-context-only",
+    "scope": "zebra-nu7-phala-testnet-image-evaluation-only",
     "release_id": 401443178,
     "tag": "v7.0.0-rc.0",
     "asset_id": 604416112,
@@ -383,7 +383,7 @@ def selected_hold_exception(lock, preflight, allow_local_hold_exception):
         return None
     if (preflight["status"] != "held-metadata-only-unapproved"
             or not allow_local_hold_exception
-            or {"scope": "local-stage-and-image-context-only",
+            or {"scope": "zebra-nu7-phala-testnet-image-evaluation-only",
                 "release_id": lock["release_id"], "tag": lock["tag"],
                 "asset_id": lock["asset"]["id"],
                 "asset_sha256": lock["asset"]["sha256"]} != LOCAL_HOLD_EXCEPTION
@@ -445,7 +445,7 @@ def main():
     staging.add_argument("--archive", required=True, type=Path)
     staging.add_argument("--verifier", required=True, type=Path)
     staging.add_argument("--output", required=True, type=Path)
-    staging.add_argument("--allow-nu7-local-hold-exception", action="store_true")
+    staging.add_argument("--allow-nu7-evaluation-hold-exception", action="store_true")
     args = parser.parse_args()
     try:
         lock, lock_sha256 = load_lock()
@@ -453,7 +453,7 @@ def main():
             report = live_preflight(lock)
         else:
             report = stage(lock, lock_sha256, args.archive, args.verifier, args.output,
-                           args.allow_nu7_local_hold_exception)
+                           args.allow_nu7_evaluation_hold_exception)
         print(json.dumps(report, indent=2))
         return 0 if report["status"] != "held-metadata-only-unapproved" else 2
     except (OSError, ValueError, TypeError, KeyError, tarfile.TarError) as error:

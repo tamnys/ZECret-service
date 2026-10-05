@@ -156,7 +156,7 @@ jobs:
             --base-image docker.io/library/python:3.13.15-slim-trixie@sha256:37134a49d21d2120e4c4d73bb76f8a4ab9aef31f096f7ec2ead48c2feead4332 \
             --base-image-created-at 2026-09-19T00:58:14Z \
             --output "$scratch/image-context" \
-            --allow-nu7-local-hold-exception
+            --allow-nu7-evaluation-hold-exception
           python3 -I "$source/deploy/phala/prepare.py" check-image-context \
             --context "$scratch/image-context"
 
@@ -264,6 +264,7 @@ jobs:
           if first_archive != second_archive:
               raise SystemExit("native Docker archives changed across builds")
           Path(sys.argv[5]).write_text(first_archive + "\n")
+          print(f"Twice-matching local image config digest: {first_image['Id']}")
           print(f"Twice-matching local Docker archive SHA-256: {first_archive}")
           PY
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/amd64

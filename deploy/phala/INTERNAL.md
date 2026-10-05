@@ -4,7 +4,7 @@ The Phala package reuses the reviewed Zebra v7.0.0-rc.0 metadata lock at
 `deploy/gcp/zebra-release.lock.json` and the stage-only verifier at
 `tools/gcp-guest/verify_zebra_release.py`. This is generic Zebra artifact
 provenance, not a GCP deploy dependency. The explicit NU7 exception permits
-only local staging, image-context preparation, and launch-document rendering
+staging, image-context preparation, publication, and launch-document rendering
 while the seven-day hold is active. It is bound to the exact release asset ID
 and digest in the stage receipt and copied into the local image context. The
 earlier [native image smoke](../../records/phala-native-image-smoke.md)

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "status": "staged-diagnostic-unapproved",
-  "checked_at_utc": "2026-10-05T21:44:19Z",
+  "checked_at_utc": "2026-10-05T22:13:14Z",
   "eligible_at_utc": "2026-10-09T00:18:54Z",
   "archive_downloaded_by_tool": false,
   "image_built": false,
   "private_mode_approved": false,
   "local_hold_exception": {
-    "scope": "local-stage-and-image-context-only",
+    "scope": "zebra-nu7-phala-testnet-image-evaluation-only",
     "release_id": 401443178,
     "tag": "v7.0.0-rc.0",
     "asset_id": 604416112,
