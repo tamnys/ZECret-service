@@ -15,7 +15,7 @@ use zrpc_verifier::{
         BoundQuoteInspection, InspectionStatus, inspect_phala_public_preview_quote_and_report_data,
     },
     workload::{
-        BoundWorkloadInspection, WorkloadInspection, WorkloadPolicy,
+        BoundWorkloadInspection, PhalaTrustedWorkloadPolicy, WorkloadInspection, WorkloadPolicy,
         inspect_phala_public_preview_workload, inspect_phala_trusted_workload_and_report_data,
         inspect_workload_and_report_data,
     },
@@ -31,6 +31,12 @@ pub enum EndpointInspectionIssue {
     CollateralExpiredDuringInspection,
     MalformedQuoteEncoding,
     ChallengeMismatch,
+}
+
+#[derive(Clone, Copy)]
+enum InspectionPolicy<'a> {
+    Exact(&'a WorkloadPolicy),
+    PhalaTrusted(&'a PhalaTrustedWorkloadPolicy),
 }
 
 /// The checks describe this inspection only, not an approved release or a
@@ -149,7 +155,11 @@ impl UnverifiedPublicEvidence {
         raw_app_compose: &[u8],
         policy: &WorkloadPolicy,
     ) -> EndpointInspection {
-        self.inspect_against(collateral_json, raw_app_compose, policy, false)
+        self.inspect_against(
+            collateral_json,
+            raw_app_compose,
+            InspectionPolicy::Exact(policy),
+        )
     }
 
     /// Retain the original connection only for typed public reads after
@@ -315,7 +325,11 @@ impl UnverifiedPublicEvidence {
             if !release.matches_launch_config(raw_app_compose) {
                 return None;
             }
-            let report = self.inspect_against(collateral_json, raw_app_compose, policy, false);
+            let report = self.inspect_against(
+                collateral_json,
+                raw_app_compose,
+                InspectionPolicy::Exact(policy),
+            );
             report
                 .diagnostic_passed()
                 .then_some(report.private_collateral_deadline)
@@ -357,7 +371,11 @@ impl UnverifiedPublicEvidence {
             if !release.matches_launch_config(raw_app_compose) {
                 return None;
             }
-            let report = self.inspect_against(collateral_json, raw_app_compose, policy, true);
+            let report = self.inspect_against(
+                collateral_json,
+                raw_app_compose,
+                InspectionPolicy::PhalaTrusted(policy),
+            );
             report
                 .diagnostic_passed()
                 .then_some(report.private_collateral_deadline)
@@ -381,8 +399,7 @@ impl UnverifiedPublicEvidence {
         &self,
         collateral_json: &[u8],
         raw_app_compose: &[u8],
-        policy: &WorkloadPolicy,
-        phala_trusted: bool,
+        policy: InspectionPolicy<'_>,
     ) -> EndpointInspection {
         let mut report = EndpointInspection::new();
         self.check_session(&mut report);
@@ -407,24 +424,25 @@ impl UnverifiedPublicEvidence {
                 return report;
             }
         };
-        report.evidence = Some(if phala_trusted {
-            inspect_phala_trusted_workload_and_report_data(
+        report.evidence = Some(match policy {
+            InspectionPolicy::PhalaTrusted(policy) => {
+                inspect_phala_trusted_workload_and_report_data(
+                    &quote,
+                    collateral_json,
+                    self.evidence.event_log.as_bytes(),
+                    raw_app_compose,
+                    policy,
+                    &self.expected_report_data,
+                )
+            }
+            InspectionPolicy::Exact(policy) => inspect_workload_and_report_data(
                 &quote,
                 collateral_json,
                 self.evidence.event_log.as_bytes(),
                 raw_app_compose,
                 policy,
                 &self.expected_report_data,
-            )
-        } else {
-            inspect_workload_and_report_data(
-                &quote,
-                collateral_json,
-                self.evidence.event_log.as_bytes(),
-                raw_app_compose,
-                policy,
-                &self.expected_report_data,
-            )
+            ),
         });
         // Recheck after synchronous cryptographic/event-log work: its cost must
         // not extend the original lifetime or leave a closed session accepted.

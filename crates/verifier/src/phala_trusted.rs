@@ -2,7 +2,10 @@
 //! The client packages exact reviewed manifest bytes; a local selection can
 //! only narrow this catalog.
 
-use crate::{PhalaTrustedPolicy, invalid_policy, workload::WorkloadPolicy};
+use crate::{
+    PhalaTrustedPolicy, invalid_policy,
+    workload::{PhalaKeyPinnedWorkloadPolicy, PhalaTrustedWorkloadPolicy, WorkloadPolicy},
+};
 use ez_hash::{Hasher, Sha256};
 use serde::{
     Deserialize,
@@ -62,7 +65,7 @@ pub(crate) fn is_embedded(id: &str) -> bool {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Manifest {
+struct Manifest<W> {
     schema_version: u32,
     release_id: String,
     trust_model: String,
@@ -72,7 +75,24 @@ struct Manifest {
     pre_launch_script_sha256: String,
     container_digests: Vec<String>,
     kms_identity: String,
-    workload: WorkloadPolicy,
+    workload: W,
+}
+
+impl<W> Manifest<W> {
+    fn map_workload<T>(self, f: impl FnOnce(W) -> T) -> Manifest<T> {
+        Manifest {
+            schema_version: self.schema_version,
+            release_id: self.release_id,
+            trust_model: self.trust_model,
+            stock_os_sha256: self.stock_os_sha256,
+            measurement_reference_sha256: self.measurement_reference_sha256,
+            launch_config_sha256: self.launch_config_sha256,
+            pre_launch_script_sha256: self.pre_launch_script_sha256,
+            container_digests: self.container_digests,
+            kms_identity: self.kms_identity,
+            workload: f(self.workload),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -164,7 +184,7 @@ pub struct PhalaTrustedRelease {
     launch_sha256: [u8; 32],
     pre_launch_script_sha256: [u8; 32],
     container_digests: Vec<String>,
-    workload: WorkloadPolicy,
+    workload: PhalaTrustedWorkloadPolicy,
 }
 
 impl PhalaTrustedRelease {
@@ -194,15 +214,37 @@ impl PhalaTrustedRelease {
         if Sha256::hash(embedded.manifest_json) != embedded.manifest_sha256 {
             return Err(invalid_policy());
         }
-        let manifest: Manifest =
+        let shape: serde_json::Value =
             serde_json::from_slice(embedded.manifest_json).map_err(|_| invalid_policy())?;
+        let manifest = match shape.get("schema_version").and_then(|v| v.as_u64()) {
+            Some(1) => serde_json::from_slice::<Manifest<WorkloadPolicy>>(embedded.manifest_json)
+                .map_err(|_| invalid_policy())?
+                .map_workload(PhalaTrustedWorkloadPolicy::Exact),
+            Some(2) => serde_json::from_slice::<Manifest<PhalaKeyPinnedWorkloadPolicy>>(
+                embedded.manifest_json,
+            )
+            .map_err(|_| invalid_policy())?
+            .map_workload(PhalaTrustedWorkloadPolicy::KmsKeyPinned),
+            _ => return Err(invalid_policy()),
+        };
         // The reference is the canonical serialized policy packaged in this
         // client, never a digest asserted by the peer or learned from a quote.
-        let measurement_reference =
-            serde_json::to_vec(&manifest.workload).map_err(|_| invalid_policy())?;
-        if manifest.schema_version != 1
+        let (measurement_reference, valid_workload) = match &manifest.workload {
+            PhalaTrustedWorkloadPolicy::Exact(policy) => (
+                serde_json::to_vec(policy).map_err(|_| invalid_policy())?,
+                manifest.schema_version == 1
+                    && manifest.trust_model == "phala-managed-guest-kms-runtime"
+                    && policy.validate().is_ok(),
+            ),
+            PhalaTrustedWorkloadPolicy::KmsKeyPinned(policy) => (
+                serde_json::to_vec(policy).map_err(|_| invalid_policy())?,
+                manifest.schema_version == 2
+                    && manifest.trust_model == "phala-managed-guest-kms-key-pinned-runtime"
+                    && policy.validate().is_ok(),
+            ),
+        };
+        if !valid_workload
             || manifest.release_id != embedded.id
-            || manifest.trust_model != "phala-managed-guest-kms-runtime"
             || !hex32(&manifest.stock_os_sha256)
             || !hex32(&manifest.measurement_reference_sha256)
             || manifest.measurement_reference_sha256
@@ -210,10 +252,9 @@ impl PhalaTrustedRelease {
             || !hex32(&manifest.launch_config_sha256)
             || !hex32(&manifest.pre_launch_script_sha256)
             || manifest.kms_identity.is_empty()
-            || manifest.workload.validate().is_err()
-            || hex::encode(manifest.workload.os_image_hash) != manifest.stock_os_sha256
-            || hex::encode(manifest.workload.compose_hash) != manifest.launch_config_sha256
-            || manifest.workload.key_provider.id != manifest.kms_identity
+            || hex::encode(manifest.workload.os_image_hash()) != manifest.stock_os_sha256
+            || hex::encode(manifest.workload.compose_hash()) != manifest.launch_config_sha256
+            || manifest.workload.key_provider().id != manifest.kms_identity
             || manifest.container_digests.is_empty()
             || !manifest
                 .container_digests
@@ -230,7 +271,7 @@ impl PhalaTrustedRelease {
         Ok(Self {
             id: embedded.id.to_owned(),
             manifest_sha256: embedded.manifest_sha256,
-            launch_sha256: manifest.workload.compose_hash,
+            launch_sha256: *manifest.workload.compose_hash(),
             pre_launch_script_sha256: script_hash,
             container_digests: expected,
             workload: manifest.workload,
@@ -243,7 +284,7 @@ impl PhalaTrustedRelease {
     pub fn manifest_sha256(&self) -> [u8; 32] {
         self.manifest_sha256
     }
-    pub fn workload(&self) -> &WorkloadPolicy {
+    pub fn workload(&self) -> &PhalaTrustedWorkloadPolicy {
         &self.workload
     }
 
@@ -260,6 +301,44 @@ impl PhalaTrustedRelease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn schema_two_is_typed_and_cannot_extend_packaged_catalog() {
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "releases/phala-prod9-blockcount-20261001.json"
+        ))
+        .unwrap();
+        value["schema_version"] = 2.into();
+        value["release_id"] = "SYNTHETIC_NOT_PACKAGED".into();
+        value["trust_model"] = "phala-managed-guest-kms-key-pinned-runtime".into();
+        value["workload"]["schema_version"] = 2.into();
+        value["workload"].as_object_mut().unwrap().remove("mr_kms");
+        let workload: PhalaKeyPinnedWorkloadPolicy =
+            serde_json::from_value(value["workload"].clone()).unwrap();
+        value["measurement_reference_sha256"] =
+            hex::encode(Sha256::hash(&serde_json::to_vec(&workload).unwrap())).into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let embedded = EmbeddedRelease {
+            id: "SYNTHETIC_NOT_PACKAGED",
+            manifest_sha256: Sha256::hash(&bytes),
+            manifest_json: Box::leak(bytes.into_boxed_slice()),
+        };
+        let release = PhalaTrustedRelease::from_embedded(&embedded).unwrap();
+        assert!(matches!(
+            release.workload(),
+            PhalaTrustedWorkloadPolicy::KmsKeyPinned(_)
+        ));
+        assert!(!is_embedded(embedded.id));
+        let mut changed: serde_json::Value =
+            serde_json::from_slice(embedded.manifest_json).unwrap();
+        changed["workload"]["mr_kms"] = "00".repeat(32).into();
+        let changed_bytes = serde_json::to_vec(&changed).unwrap();
+        let invalid = EmbeddedRelease {
+            id: embedded.id,
+            manifest_sha256: Sha256::hash(&changed_bytes),
+            manifest_json: Box::leak(changed_bytes.into_boxed_slice()),
+        };
+        assert!(PhalaTrustedRelease::from_embedded(&invalid).is_err());
+    }
     #[test]
     fn local_selection_cannot_add_releases() {
         let mut policy = PhalaTrustedPolicy::default();
