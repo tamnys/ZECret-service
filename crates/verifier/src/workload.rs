@@ -32,6 +32,136 @@ pub struct WorkloadPolicy {
     pub key_provider: KeyProviderPolicy,
 }
 
+/// A separately packaged expectation for the explicit Phala-trusting profile.
+/// It still pins the guest, app and KMS public-key identity, but deliberately
+/// does not claim that Phala's KMS code measurement has been independently
+/// approved. It cannot be supplied by a diagnostic policy file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhalaKeyPinnedWorkloadPolicy {
+    pub schema_version: u32,
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub mrtd: [u8; 48],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub rtmr0: [u8; 48],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub rtmr1: [u8; 48],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub rtmr2: [u8; 48],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub os_image_hash: [u8; 32],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub compose_hash: [u8; 32],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub app_id: [u8; 20],
+    #[serde(deserialize_with = "decode_hash", serialize_with = "encode_hash")]
+    pub instance_id: [u8; 20],
+    pub storage_fs: StorageFs,
+    pub key_provider: KeyProviderPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhalaTrustedWorkloadPolicy {
+    Exact(WorkloadPolicy),
+    KmsKeyPinned(PhalaKeyPinnedWorkloadPolicy),
+}
+
+impl PhalaKeyPinnedWorkloadPolicy {
+    pub(crate) fn validate(&self) -> Result<(), WorkloadIssue> {
+        if self.schema_version != 2
+            || self.key_provider.name != "kms"
+            || self.key_provider.id.is_empty()
+            || self.app_id == [0; 20]
+            || self.instance_id == [0; 20]
+        {
+            return Err(WorkloadIssue::InvalidPolicy);
+        }
+        Ok(())
+    }
+}
+
+impl PhalaTrustedWorkloadPolicy {
+    pub fn os_image_hash(&self) -> &[u8; 32] {
+        match self {
+            Self::Exact(policy) => &policy.os_image_hash,
+            Self::KmsKeyPinned(policy) => &policy.os_image_hash,
+        }
+    }
+
+    pub fn compose_hash(&self) -> &[u8; 32] {
+        match self {
+            Self::Exact(policy) => &policy.compose_hash,
+            Self::KmsKeyPinned(policy) => &policy.compose_hash,
+        }
+    }
+
+    pub fn key_provider(&self) -> &KeyProviderPolicy {
+        match self {
+            Self::Exact(policy) => &policy.key_provider,
+            Self::KmsKeyPinned(policy) => &policy.key_provider,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedWorkload<'a> {
+    Exact(&'a WorkloadPolicy),
+    PhalaKmsKeyPinned(&'a PhalaKeyPinnedWorkloadPolicy),
+}
+
+struct WorkloadFields<'a> {
+    mrtd: &'a [u8; 48],
+    rtmr0: &'a [u8; 48],
+    rtmr1: &'a [u8; 48],
+    rtmr2: &'a [u8; 48],
+    os_image_hash: &'a [u8; 32],
+    compose_hash: &'a [u8; 32],
+    mr_kms: Option<&'a [u8; 32]>,
+    app_id: &'a [u8; 20],
+    instance_id: &'a [u8; 20],
+    storage_fs: StorageFs,
+    key_provider: &'a KeyProviderPolicy,
+}
+
+impl<'a> ExpectedWorkload<'a> {
+    fn fields(self) -> Result<WorkloadFields<'a>, WorkloadIssue> {
+        match self {
+            Self::Exact(policy) => {
+                policy.validate()?;
+                Ok(WorkloadFields {
+                    mrtd: &policy.mrtd,
+                    rtmr0: &policy.rtmr0,
+                    rtmr1: &policy.rtmr1,
+                    rtmr2: &policy.rtmr2,
+                    os_image_hash: &policy.os_image_hash,
+                    compose_hash: &policy.compose_hash,
+                    mr_kms: Some(&policy.mr_kms),
+                    app_id: &policy.app_id,
+                    instance_id: &policy.instance_id,
+                    storage_fs: policy.storage_fs,
+                    key_provider: &policy.key_provider,
+                })
+            }
+            Self::PhalaKmsKeyPinned(policy) => {
+                policy.validate()?;
+                Ok(WorkloadFields {
+                    mrtd: &policy.mrtd,
+                    rtmr0: &policy.rtmr0,
+                    rtmr1: &policy.rtmr1,
+                    rtmr2: &policy.rtmr2,
+                    os_image_hash: &policy.os_image_hash,
+                    compose_hash: &policy.compose_hash,
+                    mr_kms: None,
+                    app_id: &policy.app_id,
+                    instance_id: &policy.instance_id,
+                    storage_fs: policy.storage_fs,
+                    key_provider: &policy.key_provider,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageFs {
@@ -158,9 +288,13 @@ pub fn inspect_workload(
     raw_app_compose: &[u8],
     policy: &WorkloadPolicy,
 ) -> WorkloadInspection {
-    inspect_workload_using(event_log_json, raw_app_compose, policy, None, |inspect| {
-        offline::inspect_quote_with_claims(quote, collateral_json, inspect)
-    })
+    inspect_workload_using(
+        event_log_json,
+        raw_app_compose,
+        ExpectedWorkload::Exact(policy),
+        None,
+        |inspect| offline::inspect_quote_with_claims(quote, collateral_json, inspect),
+    )
     .workload
 }
 
@@ -175,11 +309,16 @@ pub fn inspect_phala_public_preview_workload(
     raw_app_compose: &[u8],
     policy: &WorkloadPolicy,
 ) -> WorkloadInspection {
-    let mut report =
-        inspect_workload_using(event_log_json, raw_app_compose, policy, None, |inspect| {
+    let mut report = inspect_workload_using(
+        event_log_json,
+        raw_app_compose,
+        ExpectedWorkload::Exact(policy),
+        None,
+        |inspect| {
             offline::inspect_phala_public_preview_quote_with_claims(quote, collateral_json, inspect)
-        })
-        .workload;
+        },
+    )
+    .workload;
     report.quote.operation = "public_preview_workload_inspection";
     report.policy_source = "caller_supplied_public_preview_not_release_approval";
     report
@@ -193,13 +332,19 @@ pub fn inspect_phala_trusted_workload_and_report_data(
     collateral_json: &[u8],
     event_log_json: &[u8],
     raw_app_compose: &[u8],
-    policy: &WorkloadPolicy,
+    policy: &PhalaTrustedWorkloadPolicy,
     expected_report_data: &[u8; 64],
 ) -> BoundWorkloadInspection {
+    let expected = match policy {
+        PhalaTrustedWorkloadPolicy::Exact(policy) => ExpectedWorkload::Exact(policy),
+        PhalaTrustedWorkloadPolicy::KmsKeyPinned(policy) => {
+            ExpectedWorkload::PhalaKmsKeyPinned(policy)
+        }
+    };
     let mut result = inspect_workload_using(
         event_log_json,
         raw_app_compose,
-        policy,
+        expected,
         Some(expected_report_data),
         |inspect| offline::inspect_phala_trusted_quote_with_claims(quote, collateral_json, inspect),
     );
@@ -221,7 +366,7 @@ pub fn inspect_workload_and_report_data(
     inspect_workload_using(
         event_log_json,
         raw_app_compose,
-        policy,
+        ExpectedWorkload::Exact(policy),
         Some(expected_report_data),
         |inspect| offline::inspect_quote_with_claims(quote, collateral_json, inspect),
     )
@@ -230,7 +375,7 @@ pub fn inspect_workload_and_report_data(
 fn inspect_workload_using(
     event_log_json: &[u8],
     raw_app_compose: &[u8],
-    policy: &WorkloadPolicy,
+    policy: ExpectedWorkload<'_>,
     expected_report_data: Option<&[u8; 64]>,
     inspect_quote: impl FnOnce(&mut dyn FnMut(&dcap_qvl::QuoteClaims)) -> OfflineInspection,
 ) -> BoundWorkloadInspection {
@@ -390,10 +535,10 @@ fn check_workload(
     td: &TDReport10,
     event_log_json: &[u8],
     raw_app_compose: &[u8],
-    policy: &WorkloadPolicy,
+    policy: ExpectedWorkload<'_>,
     checks: &mut Checks,
 ) -> Result<(), WorkloadIssue> {
-    policy.validate()?;
+    let policy = policy.fields()?;
     // Upstream RuntimeEvent uses to_ne_bytes; the pinned dstack target is LE.
     if !cfg!(target_endian = "little") {
         return Err(WorkloadIssue::UnsupportedEndianness);
@@ -407,25 +552,29 @@ fn check_workload(
     checks.app = InspectionStatus::Rejected;
     let boot = boot_events(&runtime)?;
     checks.os = InspectionStatus::Rejected;
-    if td.mr_td != policy.mrtd
-        || td.rt_mr0 != policy.rtmr0
-        || td.rt_mr1 != policy.rtmr1
-        || td.rt_mr2 != policy.rtmr2
+    if td.mr_td != *policy.mrtd
+        || td.rt_mr0 != *policy.rtmr0
+        || td.rt_mr1 != *policy.rtmr1
+        || td.rt_mr2 != *policy.rtmr2
     {
         return Err(WorkloadIssue::OsMeasurementMismatch);
     }
-    if boot[6].payload != policy.os_image_hash {
+    if boot[6].payload != *policy.os_image_hash {
         return Err(WorkloadIssue::OsImageDigestMismatch);
     }
     checks.os = InspectionStatus::Verified;
     let actual_compose = Sha256::hash(raw_app_compose);
-    if actual_compose != policy.compose_hash || boot[2].payload != policy.compose_hash {
+    if actual_compose != *policy.compose_hash || boot[2].payload != *policy.compose_hash {
         return Err(WorkloadIssue::ComposeHashMismatch);
     }
-    if boot[1].payload != policy.app_id || boot[3].payload != policy.instance_id {
+    if boot[1].payload != *policy.app_id || boot[3].payload != *policy.instance_id {
         return Err(WorkloadIssue::ApplicationIdentityMismatch);
     }
-    if boot[5].payload != policy.mr_kms {
+    if policy
+        .mr_kms
+        .is_some_and(|expected| boot[5].payload != *expected)
+        || boot[5].payload.len() != 32
+    {
         return Err(WorkloadIssue::KmsMeasurementMismatch);
     }
     if boot[8].payload != policy.storage_fs.as_bytes() {
@@ -438,7 +587,7 @@ fn check_workload(
     }
     let provider: KeyProviderPolicy =
         serde_json::from_slice(&boot[7].payload).map_err(|_| WorkloadIssue::KeyProviderMismatch)?;
-    if provider != policy.key_provider {
+    if provider != *policy.key_provider {
         return Err(WorkloadIssue::KeyProviderMismatch);
     }
     checks.app = InspectionStatus::Verified;
@@ -520,14 +669,98 @@ mod tests {
         events: &[RuntimeEvent],
         raw: &[u8],
     ) -> Result<(), WorkloadIssue> {
-        check_workload(td, &log_json(events), raw, policy, &mut Checks::new())
+        check_workload(
+            td,
+            &log_json(events),
+            raw,
+            ExpectedWorkload::Exact(policy),
+            &mut Checks::new(),
+        )
+    }
+
+    fn key_pinned(policy: &WorkloadPolicy) -> PhalaKeyPinnedWorkloadPolicy {
+        PhalaKeyPinnedWorkloadPolicy {
+            schema_version: 2,
+            mrtd: policy.mrtd,
+            rtmr0: policy.rtmr0,
+            rtmr1: policy.rtmr1,
+            rtmr2: policy.rtmr2,
+            os_image_hash: policy.os_image_hash,
+            compose_hash: policy.compose_hash,
+            app_id: policy.app_id,
+            instance_id: policy.instance_id,
+            storage_fs: policy.storage_fs,
+            key_provider: policy.key_provider.clone(),
+        }
+    }
+
+    #[test]
+    fn synthetic_key_pinned_policy_allows_only_changed_kms_measurement() {
+        let (exact, mut td, mut events) = policy_unit_only();
+        let pinned = key_pinned(&exact);
+        let check = |td: &TDReport10, events: &[RuntimeEvent]| {
+            check_workload(
+                td,
+                &log_json(events),
+                RAW_COMPOSE,
+                ExpectedWorkload::PhalaKmsKeyPinned(&pinned),
+                &mut Checks::new(),
+            )
+        };
+        assert_eq!(check(&td, &events), Ok(()));
+        events[5].payload[0] ^= 1;
+        td.rt_mr3 = cc_eventlog::replay_events::<Sha384>(&events, None);
+        assert_eq!(check(&td, &events), Ok(()));
+        assert_eq!(
+            policy_check(&exact, &td, &events, RAW_COMPOSE),
+            Err(WorkloadIssue::KmsMeasurementMismatch)
+        );
+        for (index, expected) in [
+            (1, WorkloadIssue::ApplicationIdentityMismatch),
+            (2, WorkloadIssue::ComposeHashMismatch),
+            (3, WorkloadIssue::ApplicationIdentityMismatch),
+            (6, WorkloadIssue::OsImageDigestMismatch),
+            (7, WorkloadIssue::KeyProviderMismatch),
+            (8, WorkloadIssue::StoragePolicyMismatch),
+        ] {
+            let mut changed = events.clone();
+            changed[index].payload[0] ^= 1;
+            let mut changed_td = td.clone();
+            changed_td.rt_mr3 = cc_eventlog::replay_events::<Sha384>(&changed, None);
+            assert_eq!(check(&changed_td, &changed), Err(expected));
+        }
+        let mut malformed = events.clone();
+        malformed[5].payload.pop();
+        let mut changed_td = td.clone();
+        changed_td.rt_mr3 = cc_eventlog::replay_events::<Sha384>(&malformed, None);
+        assert_eq!(
+            check(&changed_td, &malformed),
+            Err(WorkloadIssue::KmsMeasurementMismatch)
+        );
+        let mut stale_td = td.clone();
+        stale_td.rt_mr3[0] ^= 1;
+        assert_eq!(
+            check(&stale_td, &events),
+            Err(WorkloadIssue::RuntimeMeasurementMismatch)
+        );
     }
 
     fn historical_bound(quote: &[u8], expected: &[u8; 64]) -> BoundWorkloadInspection {
         let (policy, _, _) = policy_unit_only();
-        inspect_workload_using(b"[]", RAW_COMPOSE, &policy, Some(expected), |inspect| {
-            offline::inspect_fixture_quote_with_claims(quote, COLLATERAL, 1_752_919_234, inspect)
-        })
+        inspect_workload_using(
+            b"[]",
+            RAW_COMPOSE,
+            ExpectedWorkload::Exact(&policy),
+            Some(expected),
+            |inspect| {
+                offline::inspect_fixture_quote_with_claims(
+                    quote,
+                    COLLATERAL,
+                    1_752_919_234,
+                    inspect,
+                )
+            },
+        )
     }
 
     #[test]
