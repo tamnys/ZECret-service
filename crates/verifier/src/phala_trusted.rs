@@ -412,6 +412,16 @@ mod tests {
     }
 
     #[test]
+    fn deleted_zero_height_wallet_release_cannot_be_selected() {
+        let policy = PhalaTrustedPolicy {
+            phala_trusted_enabled: true,
+            reviewed_release_ids: vec!["phala-prod5-wallet-zero-height-20261005-1".into()],
+            ..PhalaTrustedPolicy::default()
+        };
+        assert!(PhalaTrustedRelease::selected(&policy).is_err());
+    }
+
+    #[test]
     fn launch_parser_rejects_mutable_images_and_duplicate_services() {
         let image = format!("repo@sha256:{}", "a".repeat(64));
         let compose = format!(
