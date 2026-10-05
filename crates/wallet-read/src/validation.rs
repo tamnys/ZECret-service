@@ -46,13 +46,20 @@ fn block_id(id: &wire::BlockId) -> Result<(), Status> {
     Ok(())
 }
 
-fn height_range(range: Option<wire::BlockRange>) -> Result<(), Status> {
+fn height_range(
+    range: Option<wire::BlockRange>,
+    zero_means_full_range: bool,
+) -> Result<(), Status> {
     let range = range.ok_or_else(invalid)?;
     let start = range.start.ok_or_else(invalid)?;
     let end = range.end.ok_or_else(invalid)?;
-    block_id(&start)?;
-    block_id(&end)?;
-    if !start.hash.is_empty() || !end.hash.is_empty() || start.height > end.height {
+    if start.height > u32::MAX as u64
+        || end.height > u32::MAX as u64
+        || !start.hash.is_empty()
+        || !end.hash.is_empty()
+        || (!zero_means_full_range && (start.height == 0 || end.height == 0))
+        || (start.height > end.height && !(zero_means_full_range && end.height == 0))
+    {
         return Err(invalid());
     }
     Ok(())
@@ -71,7 +78,7 @@ pub fn validate_unary_request(method: ReadMethod, payload: &[u8]) -> Result<Vec<
         }
         ReadMethod::GetBlockRange | ReadMethod::GetBlockRangeNullifiers => {
             let request = decode::<wire::BlockRange>(payload)?;
-            height_range(Some(request.clone()))?;
+            height_range(Some(request.clone()), false)?;
             Ok(request.encode_to_vec())
         }
         ReadMethod::GetTransaction => {
@@ -84,7 +91,9 @@ pub fn validate_unary_request(method: ReadMethod, payload: &[u8]) -> Result<Vec<
         ReadMethod::GetTaddressTxids | ReadMethod::GetTaddressTransactions => {
             let request = decode::<wire::TransparentAddressBlockFilter>(payload)?;
             address(&request.address)?;
-            height_range(request.range.clone())?;
+            // Pinned Zebra v6.4.2 interprets zero in either bound as an
+            // unbounded transparent-history selector.
+            height_range(request.range.clone(), true)?;
             Ok(request.encode_to_vec())
         }
         ReadMethod::GetTaddressBalance => {
@@ -443,6 +452,51 @@ mod tests {
             validate_unary_request(
                 ReadMethod::GetTreeState,
                 &wire::BlockId::default().encode_to_vec(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn transparent_history_accepts_zebra_unbounded_height_selectors() {
+        for method in [
+            ReadMethod::GetTaddressTxids,
+            ReadMethod::GetTaddressTransactions,
+        ] {
+            for (start, end) in [(0, 20), (20, 0), (0, 0)] {
+                let request = wire::TransparentAddressBlockFilter {
+                    address: PREVIEW_TESTNET_ADDRESS.to_owned(),
+                    range: Some(wire::BlockRange {
+                        start: Some(wire::BlockId {
+                            height: start,
+                            hash: vec![],
+                        }),
+                        end: Some(wire::BlockId {
+                            height: end,
+                            hash: vec![],
+                        }),
+                    }),
+                };
+                assert!(validate_unary_request(method, &request.encode_to_vec()).is_ok());
+            }
+        }
+        let reversed = wire::TransparentAddressBlockFilter {
+            address: PREVIEW_TESTNET_ADDRESS.to_owned(),
+            range: Some(wire::BlockRange {
+                start: Some(wire::BlockId {
+                    height: 20,
+                    hash: vec![],
+                }),
+                end: Some(wire::BlockId {
+                    height: 10,
+                    hash: vec![],
+                }),
+            }),
+        };
+        assert!(
+            validate_unary_request(
+                ReadMethod::GetTaddressTransactions,
+                &reversed.encode_to_vec()
             )
             .is_err()
         );

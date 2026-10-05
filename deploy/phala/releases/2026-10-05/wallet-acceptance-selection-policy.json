@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "network": "testnet",
+  "phala_trusted_enabled": true,
+  "reviewed_release_ids": [
+    "phala-prod5-wallet-acceptance-20261005-1"
+  ]
+}
