@@ -2,11 +2,62 @@
 //! This uses a local public testnet node and no attestation or private wallet data.
 
 use futures_util::StreamExt;
-use std::{error::Error, net::SocketAddr};
+use std::{
+    error::Error,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 use tonic::Request;
 use wire::compact_tx_streamer_server::CompactTxStreamer;
+use zrpc_protocol::MAX_CONNECTION_LIFETIME_SECONDS;
 use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
 use zrpc_wallet_read::{backend::ZebraReadOnly, wire};
+
+#[tokio::test]
+#[ignore = "requires a native local Zebra v6.4.2 testnet lightwallet endpoint and observed range"]
+async fn pinned_zebra_completes_observed_range_within_session_lifetime()
+-> Result<(), Box<dyn Error>> {
+    let address: SocketAddr = std::env::var("ZRPC_LIVE_ZEBRA_LIGHTWALLETD")?.parse()?;
+    let start: u32 = std::env::var("ZRPC_LIVE_ZEBRA_RANGE_START")?.parse()?;
+    let end: u32 = std::env::var("ZRPC_LIVE_ZEBRA_RANGE_END")?.parse()?;
+    if start == 0 || start > end {
+        return Err("range must be ascending and start above genesis".into());
+    }
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(MAX_CONNECTION_LIFETIME_SECONDS),
+        async move {
+            let backend = ZebraReadOnly::new(address)?;
+            let mut blocks = backend
+                .get_block_range(Request::new(wire::BlockRange {
+                    start: Some(wire::BlockId {
+                        height: u64::from(start),
+                        hash: vec![],
+                    }),
+                    end: Some(wire::BlockId {
+                        height: u64::from(end),
+                        hash: vec![],
+                    }),
+                }))
+                .await?
+                .into_inner();
+            let mut expected = u64::from(start);
+            while let Some(block) = blocks.next().await.transpose()? {
+                assert_eq!(block.height, expected);
+                eprintln!(
+                    "public block height={} elapsed_ms={}",
+                    block.height,
+                    started.elapsed().as_millis()
+                );
+                expected += 1;
+            }
+            assert_eq!(expected, u64::from(end) + 1);
+            Ok::<(), Box<dyn Error>>(())
+        },
+    )
+    .await??;
+    Ok(())
+}
 
 #[tokio::test]
 #[ignore = "requires a native local Zebra v6.4.2 testnet lightwallet endpoint"]
