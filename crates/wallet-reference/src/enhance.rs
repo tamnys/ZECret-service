@@ -2,6 +2,7 @@
 //! status, and mined transparent-history requests. Other transparent filters
 //! remain explicit in the report until their full protocol contract is met.
 
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use rusqlite::Connection;
 use std::{
     error::Error,
@@ -78,7 +79,7 @@ impl ChainTxState {
     }
 }
 
-type LocalWallet = WalletDb<Connection, Network, SystemClock, rand_core::OsRng>;
+type LocalWallet = WalletDb<Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
 fn decode_checked_transaction(
     raw: &RawTransaction,

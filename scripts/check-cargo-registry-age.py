@@ -24,6 +24,9 @@ HOLD = dt.timedelta(days=7)
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 PUBTIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+NU7_EXCEPTION_SCOPE = "nu7-testnet-wallet-evaluation-only"
+NU7_EXCEPTION_PATH = Path(__file__).with_name("nu7-registry-age-exception.json")
+NU7_EXCEPTION_SHA256 = "e188e488b2c236c1e04dc377ec271f012ee0a840fecc9a8c95adddb1b1b84731"
 
 
 class Refusal(Exception):
@@ -120,6 +123,38 @@ def unique_json_object(pairs):
     return entry
 
 
+def load_exception(path, expected_sha256, lock_sha256, packages):
+    if not path.is_file() or path.is_symlink():
+        raise Refusal("NU7 exception must be a regular file")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise Refusal("NU7 exception manifest digest differs from review")
+    try:
+        manifest = json.loads(raw, object_pairs_hook=unique_json_object)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise Refusal("malformed NU7 exception manifest") from error
+    if (not isinstance(manifest, dict)
+            or set(manifest) != {"schema_version", "scope", "cargo_lock_sha256", "packages"}
+            or manifest["schema_version"] != 1
+            or manifest["scope"] != NU7_EXCEPTION_SCOPE
+            or manifest["cargo_lock_sha256"] != lock_sha256
+            or not isinstance(manifest["packages"], list)):
+        raise Refusal("NU7 exception is not bound to this exact lockfile")
+    approved = set()
+    for item in manifest["packages"]:
+        if not isinstance(item, dict) or set(item) != {"name", "version", "checksum"}:
+            raise Refusal("malformed NU7 exception package")
+        key = (item["name"], item["version"])
+        if (not all(isinstance(value, str) for value in key)
+                or not NAME.fullmatch(key[0]) or not key[1]
+                or key in approved or packages.get(key) != item["checksum"]):
+            raise Refusal("NU7 exception package differs from locked registry input")
+        approved.add(key)
+    if not approved:
+        raise Refusal("empty NU7 exception package set")
+    return approved
+
+
 def check_index(name, versions, response, now):
     found = {}
     for line in response.splitlines():
@@ -151,8 +186,13 @@ def check_index(name, versions, response, now):
             if now < published + HOLD]
 
 
-def preflight(lock_path, fetch=fetch_index, now=None):
+def preflight(lock_path, fetch=fetch_index, now=None, exception_path=None,
+              exception_sha256=None):
     packages, local_packages, git_sources, lock_sha256 = locked_packages(lock_path)
+    if (exception_path is None) != (exception_sha256 is None):
+        raise Refusal("NU7 exception path and digest must be supplied together")
+    approved = (load_exception(exception_path, exception_sha256, lock_sha256, packages)
+                if exception_path is not None else set())
     grouped = {}
     for (name, version), checksum in packages.items():
         grouped.setdefault(name, {})[version] = checksum
@@ -165,6 +205,10 @@ def preflight(lock_path, fetch=fetch_index, now=None):
     young = []
     for name in sorted(grouped):
         young.extend(check_index(name, grouped[name], responses[name], now))
+    rejected = [(name, version) for name, version, _ in young
+                if (name, version) not in approved]
+    accepted = [(name, version) for name, version, _ in young
+                if (name, version) in approved]
     return {
         "cargo_lock_sha256": lock_sha256,
         "registry_package_count": len(packages),
@@ -176,7 +220,12 @@ def preflight(lock_path, fetch=fetch_index, now=None):
             {"name": name, "version": version, "eligible_after_utc": expiry.isoformat()}
             for name, version, expiry in sorted(young)
         ],
-        "registry_preflight_passed": not young,
+        "registry_preflight_passed": not rejected,
+        "hold_exception_scope": NU7_EXCEPTION_SCOPE if exception_path else None,
+        "hold_exception_manifest_sha256": exception_sha256,
+        "hold_exception_applied": [
+            {"name": name, "version": version} for name, version in sorted(accepted)
+        ],
         "cargo_fetch_executed": False,
         "cargo_build_executed": False,
         "dependency_closure_verified": False,
@@ -188,12 +237,14 @@ def preflight(lock_path, fetch=fetch_index, now=None):
 def main():
     try:
         arguments = sys.argv[1:]
-        if arguments not in ([], ["--payment-helper"]):
-            raise Refusal("only the workspace or separate payment helper lock may be checked")
-        relative = ("tools/payment-crypto/Cargo.lock" if arguments
+        if arguments not in ([], ["--payment-helper"], ["--nu7-testnet-wallet-evaluation"]):
+            raise Refusal("only workspace, payment helper, or exact NU7 evaluation may be checked")
+        relative = ("tools/payment-crypto/Cargo.lock" if arguments == ["--payment-helper"]
                     else "Cargo.lock")
         lock = Path(__file__).resolve().parents[1] / relative
-        result = preflight(lock)
+        nu7 = arguments == ["--nu7-testnet-wallet-evaluation"]
+        result = preflight(lock, exception_path=NU7_EXCEPTION_PATH if nu7 else None,
+                           exception_sha256=NU7_EXCEPTION_SHA256 if nu7 else None)
     except (Refusal, OSError, UnicodeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(json.dumps({"registry_preflight_passed": False, "reason": str(error),
                           "cargo_fetch_executed": False, "cargo_build_executed": False,

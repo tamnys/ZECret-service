@@ -43,7 +43,7 @@ jobs:
           source="$GITHUB_WORKSPACE/source"
           scratch="$GITHUB_WORKSPACE/native-cargo"
           mkdir "$scratch"
-          if python3 -I "$source/scripts/check-cargo-registry-age.py" | tee "$scratch/registry-age.json"; then
+          if python3 -I "$source/scripts/check-cargo-registry-age.py" --nu7-testnet-wallet-evaluation | tee "$scratch/registry-age.json"; then
             registry_status=0
           else
             registry_status=$?

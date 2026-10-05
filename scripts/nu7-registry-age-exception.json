@@ -1,0 +1,112 @@
+{
+  "cargo_lock_sha256": "5ff7393aa6a4c952779afa9196ccff433ec14ba72c3603191c7b149f175bfd08",
+  "packages": [
+    {
+      "checksum": "5045d51a6a5e85e0a18d909eedd270c4d82ad634fee57ba707692fb3b1add5a7",
+      "name": "fpe",
+      "version": "0.7.0"
+    },
+    {
+      "checksum": "8862c7f2d99964760016516103fcc621352e77a505b22b0fc25140f09e4b8bb0",
+      "name": "halo2_gadgets",
+      "version": "0.6.0"
+    },
+    {
+      "checksum": "800f76fa421515e2729192e3863bb0a58f30fe17a9a165ea5e778a157adeb579",
+      "name": "halo2_poseidon",
+      "version": "0.2.0"
+    },
+    {
+      "checksum": "f5af2a9457f494f862cd07b81c2e98a19f50b06a2057b7569450d7c26b167d1c",
+      "name": "halo2_proofs",
+      "version": "0.4.0"
+    },
+    {
+      "checksum": "c3b0c166f7f34e02988f84a7bed22be9707b1569acc6aeb3afaf34152d0e0400",
+      "name": "incrementalmerkletree",
+      "version": "0.9.0"
+    },
+    {
+      "checksum": "4ae7ceb7b5387bd76cf3c0712f57708795c925cecf097036cedb60b5c3706e8f",
+      "name": "orchard",
+      "version": "0.16.0"
+    },
+    {
+      "checksum": "e4875346691fe8d61ee4995e0be580530893f5aacf08d8fae14bfd2c0733ecb9",
+      "name": "pczt",
+      "version": "0.10.0-pre.0"
+    },
+    {
+      "checksum": "4a2cbdcfeef20006adf72699cd466f21fe349674277cc05d3fc9b7302db7b182",
+      "name": "sapling-crypto",
+      "version": "0.9.0"
+    },
+    {
+      "checksum": "211c5ae6ff1fda9efe2cd8b90737744b3b3989f98740319284946bf110b862ed",
+      "name": "shardtree",
+      "version": "0.8.0"
+    },
+    {
+      "checksum": "43e96e21e873c5a12fcd2ee6b04315e23e8ca4488cf4929c0774483dad24a995",
+      "name": "zcash_address",
+      "version": "0.14.0-pre.0"
+    },
+    {
+      "checksum": "d1c2ce1c0d0a353c2c4554bf547c4c41a72adfd2047a37897a50b937798f67df",
+      "name": "zcash_client_backend",
+      "version": "0.25.0-pre.0"
+    },
+    {
+      "checksum": "2e8954e0ebe6f1850f21e9b1da262ec214e149234db7bf424bc7816324619f2a",
+      "name": "zcash_client_sqlite",
+      "version": "0.23.0-pre.0"
+    },
+    {
+      "checksum": "2fc5f0dfdaf6eb7f6252522f7c8f013754dd1ef22aec81c5c065f8704a2af278",
+      "name": "zcash_keys",
+      "version": "0.17.0-pre.0"
+    },
+    {
+      "checksum": "4812d133908ebf1a1c91d2411a109f63a863a152633db1fc7fbb0f774edeae30",
+      "name": "zcash_note_encryption",
+      "version": "0.5.1"
+    },
+    {
+      "checksum": "a04b3479f0a71ac560fdf07ca5119b1c9d1e44a42991a3c0595612fd51b46440",
+      "name": "zcash_pool_migration",
+      "version": "0.2.0-pre.0"
+    },
+    {
+      "checksum": "9e2f5bf9a1e5a16612cbbab5a112bcec36a3623d8585da0187dcb58a247bc078",
+      "name": "zcash_primitives",
+      "version": "0.31.0-pre.0"
+    },
+    {
+      "checksum": "98aeb25d9f741670fd63f9dbf76bca87d87c4fd32e1a7469bc4c43c4d0af09f7",
+      "name": "zcash_protocol",
+      "version": "0.11.0-pre.0"
+    },
+    {
+      "checksum": "10106859d08a2a4119af8a0fa8db72afe35647768b562f94b7a2124adad41275",
+      "name": "zcash_script",
+      "version": "0.6.0"
+    },
+    {
+      "checksum": "eeb255bbf28f7a6ad34e2e94871569ed1f5604d2d3ccac2ef63e0e7ce1a8ed4b",
+      "name": "zcash_transparent",
+      "version": "0.11.0-pre.0"
+    },
+    {
+      "checksum": "601ab4bc5f8312fa39f5411e07eb66b538687064c6e936b34eaa78f1e99ebe4d",
+      "name": "zip32",
+      "version": "0.3.0"
+    },
+    {
+      "checksum": "2e3ae1d6a417376e485a1d230adf71601ea06e5f9e27f3f6931f79db52106952",
+      "name": "zip321",
+      "version": "0.10.0-pre.0"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "nu7-testnet-wallet-evaluation-only"
+}

@@ -1,6 +1,7 @@
 """Synthetic, networkless negative cases for the Cargo registry preflight."""
 
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -94,6 +95,76 @@ source = "git+https://github.com/example/repo?rev=000000000000000000000000000000
         self.assertEqual(result["younger_than_hold"][0]["version"], "2.0.0")
         self.assertFalse(result["cargo_fetch_executed"])
         self.assertFalse(result["private_mode_approved"])
+
+    def test_exact_exception_allows_only_reviewed_young_package(self):
+        lock = ('version = 4\n[[package]]\nname = "sample"\nversion = "1.2.3"\n'
+                'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                f'checksum = "{CHECKSUM}"\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock_path = root / "Cargo.lock"
+            lock_path.write_text(lock)
+            exception_path = root / "exception.json"
+            manifest = {
+                "schema_version": 1,
+                "scope": gate.NU7_EXCEPTION_SCOPE,
+                "cargo_lock_sha256": hashlib.sha256(lock.encode()).hexdigest(),
+                "packages": [{"name": "sample", "version": "1.2.3",
+                              "checksum": CHECKSUM}],
+            }
+            exception_path.write_text(json.dumps(manifest))
+            digest = hashlib.sha256(exception_path.read_bytes()).hexdigest()
+
+            def fetch(_):
+                return entry(published="2026-09-26T19:00:00Z")
+
+            ordinary = gate.preflight(lock_path, fetch=fetch, now=NOW)
+            self.assertFalse(ordinary["registry_preflight_passed"])
+            approved = gate.preflight(lock_path, fetch=fetch, now=NOW,
+                                      exception_path=exception_path,
+                                      exception_sha256=digest)
+            self.assertTrue(approved["registry_preflight_passed"])
+            self.assertEqual(approved["hold_exception_applied"],
+                             [{"name": "sample", "version": "1.2.3"}])
+            self.assertFalse(approved["approved_release"])
+            with self.assertRaisesRegex(gate.Refusal, "digest differs"):
+                gate.preflight(lock_path, fetch=fetch, now=NOW,
+                               exception_path=exception_path,
+                               exception_sha256="0" * 64)
+            lock_path.write_text(lock + '[[package]]\nname = "local"\nversion = "0.1.0"\n')
+            with self.assertRaisesRegex(gate.Refusal, "exact lockfile"):
+                gate.preflight(lock_path, fetch=fetch, now=NOW,
+                               exception_path=exception_path,
+                               exception_sha256=digest)
+
+    def test_exception_does_not_cover_new_young_version(self):
+        lock = ('version = 4\n[[package]]\nname = "sample"\nversion = "1.2.3"\n'
+                'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                f'checksum = "{CHECKSUM}"\n[[package]]\nname = "sample"\n'
+                'version = "2.0.0"\n'
+                'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                f'checksum = "{CHECKSUM}"\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock_path = root / "Cargo.lock"
+            lock_path.write_text(lock)
+            exception_path = root / "exception.json"
+            exception_path.write_text(json.dumps({
+                "schema_version": 1, "scope": gate.NU7_EXCEPTION_SCOPE,
+                "cargo_lock_sha256": hashlib.sha256(lock.encode()).hexdigest(),
+                "packages": [{"name": "sample", "version": "1.2.3",
+                              "checksum": CHECKSUM}],
+            }))
+            digest = hashlib.sha256(exception_path.read_bytes()).hexdigest()
+            result = gate.preflight(
+                lock_path, now=NOW, exception_path=exception_path,
+                exception_sha256=digest,
+                fetch=lambda _: "\n".join((
+                    entry(published="2026-09-26T19:00:00Z"),
+                    entry(version="2.0.0", published="2026-09-26T19:00:00Z"))),
+            )
+            self.assertFalse(result["registry_preflight_passed"])
+            self.assertEqual(len(result["hold_exception_applied"]), 1)
 
     def test_unknown_or_unpinned_sources_are_rejected(self):
         for source in ("registry+https://example.invalid/index",
