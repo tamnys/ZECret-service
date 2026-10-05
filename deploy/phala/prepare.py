@@ -20,7 +20,7 @@ snapshot_spec.loader.exec_module(snapshot_package)
 STOCK_LOCK = HERE / "stock-candidate.lock.json"
 ZEBRA_LOCK = ROOT / "deploy/gcp/zebra-release.lock.json"
 REVIEWED_ZEBRA_RECEIPT = ROOT / "records/zebra-v700rc0-local-staging-receipt.json"
-STOCK_LOCK_SHA256 = "901015ea91a47e471816475651d9d8095203e314a227eda837b923d934f7cf69"
+STOCK_LOCK_SHA256 = "f8507c961201c1f569717d2c4792591806e2c6b7944597756e703b80a2b0ab3e"
 BASE_IMAGE = ("docker.io/library/python:3.13.15-slim-trixie@sha256:"
               "37134a49d21d2120e4c4d73bb76f8a4ab9aef31f096f7ec2ead48c2feead4332")
 # Created annotation in the pinned linux/amd64 OCI manifest.
@@ -36,7 +36,7 @@ CONTEXT_FILES = ("Dockerfile", "supervisor.py", "zebra.toml", "state/.keep",
 IMAGE_REF = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 LOCAL_HOLD_EXCEPTION = {
-    "scope": "local-stage-and-image-context-only",
+    "scope": "zebra-nu7-phala-testnet-image-evaluation-only",
     "release_id": 401443178,
     "tag": "v7.0.0-rc.0",
     "asset_id": 604416112,
@@ -204,7 +204,7 @@ def checked_stage_receipt(stock, zebra, lock_digest, receipt, receipt_sha256,
 def image_context(args):
     stock, zebra, lock_digest = locks()
     eligible, eligible_at = eligibility(zebra)
-    if not eligible and not getattr(args, "allow_nu7_local_hold_exception", False):
+    if not eligible and not getattr(args, "allow_nu7_evaluation_hold_exception", False):
         raise ValueError(f"Zebra release hold ends {eligible_at.isoformat()}")
     if (args.base_image != BASE_IMAGE
             or args.base_image_created_at != BASE_IMAGE_CREATED_AT):
@@ -363,7 +363,7 @@ def launch_documents(args):
     stock, zebra, lock_digest = locks()
     snapshot_lock, _ = snapshot_package.reviewed_lock()
     eligible, eligible_at = eligibility(zebra)
-    if not eligible and not getattr(args, "allow_nu7_local_hold_exception", False):
+    if not eligible and not getattr(args, "allow_nu7_evaluation_hold_exception", False):
         raise ValueError(f"Zebra release hold ends {eligible_at.isoformat()}")
     if not IMAGE_REF.fullmatch(args.image):
         raise ValueError("immutable application image reference required")
@@ -496,7 +496,7 @@ def main():
     image.add_argument("--base-image", required=True)
     image.add_argument("--base-image-created-at", required=True)
     image.add_argument("--output", required=True, type=Path)
-    image.add_argument("--allow-nu7-local-hold-exception", action="store_true")
+    image.add_argument("--allow-nu7-evaluation-hold-exception", action="store_true")
     check_image = commands.add_parser("check-image-context")
     check_image.add_argument("--context", required=True, type=Path)
     launch = commands.add_parser("launch-documents")
@@ -504,7 +504,7 @@ def main():
     launch.add_argument("--image-inputs", required=True, type=Path)
     launch.add_argument("--runtime", required=True, type=Path)
     launch.add_argument("--output", required=True, type=Path)
-    launch.add_argument("--allow-nu7-local-hold-exception", action="store_true")
+    launch.add_argument("--allow-nu7-evaluation-hold-exception", action="store_true")
     args = parser.parse_args()
     try:
         stock, zebra, _ = locks()

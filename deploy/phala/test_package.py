@@ -180,7 +180,7 @@ class PackageTests(unittest.TestCase):
             base_image=prepare.BASE_IMAGE,
             base_image_created_at=prepare.BASE_IMAGE_CREATED_AT,
             output=self.root / "context",
-            allow_nu7_local_hold_exception=True,
+            allow_nu7_evaluation_hold_exception=True,
         )
         with (patch.object(prepare, "locks", return_value=(stock, zebra, lock_digest)),
               patch.object(prepare, "NATIVE_BINARIES_SHA256", native),
@@ -220,11 +220,11 @@ class PackageTests(unittest.TestCase):
                 image_inputs=inputs_path,
                 runtime=runtime,
                 output=self.root / "launch",
-                allow_nu7_local_hold_exception=False,
+                allow_nu7_evaluation_hold_exception=False,
             )
             with self.assertRaisesRegex(ValueError, "release hold"):
                 prepare.launch_documents(render_args)
-            render_args.allow_nu7_local_hold_exception = True
+            render_args.allow_nu7_evaluation_hold_exception = True
             inputs = prepare.parse_json(inputs_bytes)
             inputs["zebra_stage_receipt_sha256"] = "0" * 64
             inputs_path.write_bytes(prepare.canonical(inputs))
