@@ -2,25 +2,25 @@
   "schema_version": 1,
   "status": "reviewed-metadata-only-unapproved",
   "repository": "ZcashFoundation/zebra",
-  "release_id": 396882484,
-  "tag": "v6.4.2",
-  "tag_object_sha": "40bf166415fa8900f05df766f12ede91c2f7f4e5",
-  "source_commit": "e3eef2f37c35127ad1769f19a1ebc7eaa5d5d291",
-  "published_at": "2026-09-25T19:45:25Z",
+  "release_id": 401443178,
+  "tag": "v7.0.0-rc.0",
+  "tag_object_sha": "bdd432bcd4339274e2b25abef29ed53ef187ed57",
+  "source_commit": "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec",
+  "published_at": "2026-10-02T00:02:03Z",
   "minimum_age_days": 7,
   "asset": {
-    "id": 589132406,
-    "name": "zebrad-6.4.2-x86_64-unknown-linux-gnu.tar.gz",
-    "size": 67178756,
-    "sha256": "505cab2c616dac1a5bc1c414716206a775f38f41ca6f70a60729df40c29e7b8b",
-    "created_at": "2026-09-25T19:59:10Z",
-    "updated_at": "2026-09-25T19:59:12Z"
+    "id": 604416112,
+    "name": "zebrad-7.0.0-rc.0-x86_64-unknown-linux-gnu.tar.gz",
+    "size": 67062780,
+    "sha256": "7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2",
+    "created_at": "2026-10-02T00:18:54Z",
+    "updated_at": "2026-10-02T00:18:57Z"
   },
   "signer_workflow": "ZcashFoundation/zebra/.github/workflows/zfnd-release-binaries.yml",
   "attestation_bundle": {
-    "source_url": "https://api.github.com/repos/ZcashFoundation/zebra/attestations/sha256:505cab2c616dac1a5bc1c414716206a775f38f41ca6f70a60729df40c29e7b8b",
-    "size": 10824,
-    "sha256": "db9668a46cd12317f1623c54b787519ffd9e54c176dc823804eb5aedbb8fb000"
+    "source_url": "https://api.github.com/repos/ZcashFoundation/zebra/attestations/sha256:7486dcd91c18d9b8778c632a0cd8e5639d6313ae4d88bc8fd09b1bb7eb12c1f2",
+    "size": 11241,
+    "sha256": "6b83167e86399d478728f663011e5c1335594eed8641c5389a922d46ec65d0fa"
   },
   "reviewed_advisory_count": 45,
   "reviewed_advisory_snapshot_sha256": "4ce49bd8f88fa6f14d19f7900d83778437d69536393339f98b37d0cae95f6c3c",
@@ -33,6 +33,6 @@
     "archive_member": "gh_2.100.0_linux_arm64/bin/gh"
   },
   "gh_verifier_executable_sha256": "28a037b967065aa314cb6d539943b55d27ef2f97c523ab2b6023ccf284e1828d",
-  "zebrad_elf_sha256": "ccf1d3c82a1c23deb1dd535cfb442c5507107a16a23f6da2531be4132e95f517",
-  "zebrad_elf_size": 89613680
+  "zebrad_elf_sha256": "38a7b415c2697deaf1ac7d2878e3e51be8576aa291d54d89469379a650e55258",
+  "zebrad_elf_size": 89990504
 }

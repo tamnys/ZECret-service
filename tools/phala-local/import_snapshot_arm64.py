@@ -21,7 +21,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = ROOT / "deploy/phala/snapshot-arm64-local.lock.json"
-LOCK_SHA256 = "7ef28d73dd2691f4b1d72b0ec8312457f63684ac9d5e87ed9a7c1a364ea0bf8e"
+LOCK_SHA256 = "fd2a58c1f4b9f2fe52d0675fade0bdbafef5d40da21771f22fa7b99a3e445c1b"
 SNAPSHOT_LOCK = ROOT / "deploy/phala/snapshot.lock.json"
 IMPORTER = ROOT / "deploy/phala/image/snapshot_import.py"
 WORKSPACE = Path("/workspace")

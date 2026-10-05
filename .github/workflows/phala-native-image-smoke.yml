@@ -138,7 +138,7 @@ jobs:
           if (size, digest) != (zebra_lock["zebrad_elf_size"],
                                 zebra_lock["zebrad_elf_sha256"]):
               raise ValueError("Zebra ELF differs from reviewed identity")
-          shutil.copyfile(source / "records/zebra-v642-local-staging-receipt.json",
+          shutil.copyfile(source / "records/zebra-v700rc0-local-staging-receipt.json",
                           stage / "receipt.json")
 
           snapshot_lock = json.loads((source / "deploy/phala/snapshot.lock.json").read_bytes())
@@ -156,7 +156,7 @@ jobs:
             --base-image docker.io/library/python:3.13.15-slim-trixie@sha256:37134a49d21d2120e4c4d73bb76f8a4ab9aef31f096f7ec2ead48c2feead4332 \
             --base-image-created-at 2026-09-19T00:58:14Z \
             --output "$scratch/image-context" \
-            --allow-v642-local-hold-exception
+            --allow-nu7-local-hold-exception
           python3 -I "$source/deploy/phala/prepare.py" check-image-context \
             --context "$scratch/image-context"
 
@@ -271,7 +271,7 @@ jobs:
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = \
             '["python3","/opt/zrpc/supervisor.py"]'
           test "$(docker run --rm --pull=never --network none --read-only \
-            --entrypoint /opt/zrpc/bin/zebrad "$image" --version)" = 'zebrad 6.4.2'
+            --entrypoint /opt/zrpc/bin/zebrad "$image" --version)" = 'zebrad 7.0.0-rc.0'
           docker run --rm --pull=never --network none --read-only \
             --entrypoint /opt/zrpc/bin/zrpc-node-wrapper "$image" --help \
             | grep -F -- '--access free-demo|ticket-required'

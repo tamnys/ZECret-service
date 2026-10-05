@@ -26,7 +26,7 @@ from pathlib import Path
 
 lock = Path('/opt/zrpc/snapshot.lock.json')
 raw = lock.read_bytes()
-expected = 'a05312fe3fa447e33c48c94c512e7e6e3fcade103f9204a27516a1fdcdcc70ac'
+expected = 'be9d8781d86b9dff803f18d5caf0fc56ec5b3457bca0731fc444f8a4c62960fe'
 assert hashlib.sha256(raw).hexdigest() == expected
 value = json.loads(raw)
 published = Path('/var/lib/zebra/state')

@@ -15,7 +15,7 @@ import urllib.request
 
 LOCK = Path("/opt/zrpc/snapshot.lock.json")
 STATE = Path("/var/lib/zebra")
-LOCK_SHA256 = "a05312fe3fa447e33c48c94c512e7e6e3fcade103f9204a27516a1fdcdcc70ac"
+LOCK_SHA256 = "be9d8781d86b9dff803f18d5caf0fc56ec5b3457bca0731fc444f8a4c62960fe"
 ARCHIVE = ".zrpc-snapshot.tar.zst"
 STAGING = ".zrpc-snapshot-staging"
 MARKER = ".zrpc-snapshot-import.json"
@@ -46,6 +46,8 @@ def _lock(path, expected_digest):
             or value.get("target_cache_dir") != str(STATE)
             or value.get("archive_extraction_path") != "state/v28/testnet"
             or value.get("database_format_major_version") != 28
+            or value.get("target_database_format_major_version") != 29
+            or value.get("target_zebrad_version") != "7.0.0-rc.0"
             or not isinstance(value.get("decompressor"), dict)
             or value.get("decompressor", {}).get("package") != "zstandard"
             or value.get("decompressor", {}).get("version") != "0.25.0"

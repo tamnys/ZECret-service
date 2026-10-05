@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "status": "local-unsigned-public-testnet-import-only",
-  "source_snapshot_lock_sha256": "a05312fe3fa447e33c48c94c512e7e6e3fcade103f9204a27516a1fdcdcc70ac",
-  "source_importer_sha256": "dbe0cf43068ec6ddb4d86c04970da846418a01f870e41130d0170c54cb51e49e",
+  "source_snapshot_lock_sha256": "be9d8781d86b9dff803f18d5caf0fc56ec5b3457bca0731fc444f8a4c62960fe",
+  "source_importer_sha256": "8b7929c81eebebadf83259430fd23dfdc2c981dce352bcc2fb997577d6037b12",
   "archive_sha256": "e1702bb220a337f94496e1f65b683b63f22334fdc500c5421dd118e593358636",
   "archive_size_bytes": 11137971554,
   "extracted_regular_file_bytes": 13474627364,
