@@ -1,0 +1,107 @@
+name: Phala issuer rotation overlay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch exact image source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "${GITHUB_REPOSITORY,,}" = tamnys/zecret-service
+          test "$GITHUB_REF" = refs/heads/main
+          source="$GITHUB_WORKSPACE/source"
+          mkdir "$source"
+          git -C "$source" init -q
+          git -C "$source" fetch -q --no-tags --depth=1 "https://github.com/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          test "$(git -C "$source" rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git -C "$source" checkout -q --detach FETCH_HEAD
+
+      - name: Check the public identity and build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/source"
+          scratch="$source/.codex-tmp/issuer-rotation"
+          context="$scratch/context"
+          mkdir -p "$context"
+          python3 -I - "$source/deploy/phala/ticketed/prepare_image.py" <<'PY'
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location('prepare_image', sys.argv[1])
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.checked_public()
+          PY
+          cp "$source/deploy/phala/ticketed/issuer-rotation.Dockerfile" "$context/Dockerfile"
+          cp "$source/deploy/phala/ticketed/issuer-public.der" "$context/issuer-public.der"
+          test "$(find "$context" -type f | wc -l)" -eq 2
+
+      - name: Reproduce, smoke, and publish the rotated image
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/source"
+          scratch="$source/.codex-tmp/issuer-rotation"
+          context="$scratch/context"
+          base=ghcr.io/tamnys/zecret-service-preview@sha256:349006e0f54a8677f3bf0bf448fd916ada32f7324ee5db0838b7b68ee25092ab
+          buildkit=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+          image=zrpc-issuer-rotated:checked-local
+          grep -Fx "FROM $base" "$context/Dockerfile"
+          docker pull --platform linux/amd64 "$base"
+          docker pull --platform linux/amd64 "$buildkit"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$base")" = linux/amd64
+          docker buildx create --name zrpc-issuer-rotation --driver docker-container \
+            --driver-opt "image=$buildkit" --bootstrap
+          docker buildx inspect --bootstrap zrpc-issuer-rotation > "$scratch/builder-inspect.txt"
+          grep -E '^BuildKit version:[[:space:]]+v0\.33\.0$' "$scratch/builder-inspect.txt"
+          epoch="$(date -u -d "$(docker image inspect --format '{{.Created}}' "$base")" +%s)"
+          for pass in first second; do
+            docker buildx build --builder zrpc-issuer-rotation --platform linux/amd64 --network none \
+              --pull=false --no-cache --build-arg "SOURCE_DATE_EPOCH=$epoch" \
+              --tag "$image" \
+              --output "type=docker,dest=$scratch/image-$pass.tar,rewrite-timestamp=true" \
+              "$context"
+          done
+          cmp "$scratch/image-first.tar" "$scratch/image-second.tar"
+          docker load --input "$scratch/image-first.tar"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/amd64
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = 10001:0
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = \
+            "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$base")"
+          docker run --rm --pull=never --network none --read-only \
+            --entrypoint /bin/cat "$image" /opt/zrpc/ticket/issuer-public.der > "$scratch/image-issuer-public.der"
+          cmp "$context/issuer-public.der" "$scratch/image-issuer-public.der"
+          docker run --rm --pull=never --network none --read-only \
+            --entrypoint /opt/zrpc/bin/zrpc "$image" payments --help > "$scratch/zrpc-help.txt"
+          grep -F -- 'serve-free' "$scratch/zrpc-help.txt"
+          docker run --rm --pull=never --network none --read-only \
+            --env LD_LIBRARY_PATH=/opt/zrpc/ticket/tor \
+            --entrypoint /opt/zrpc/ticket/tor/tor "$image" --version > "$scratch/tor-version.txt"
+          grep -F -- 'Tor version' "$scratch/tor-version.txt"
+          repository=ghcr.io/tamnys/zecret-service-preview
+          tag="$repository:issuer-rotated-$GITHUB_SHA"
+          docker tag "$image" "$tag"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null
+          push_output="$(docker push "$tag")"
+          digest="$(printf '%s\n' "$push_output" | sed -nE 's/.*digest: (sha256:[a-f0-9]{64}).*/\1/p' | tail -1)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker logout ghcr.io >/dev/null
+          docker manifest inspect "$repository@$digest" > "$scratch/published-manifest.json"
+          {
+            echo 'Issuer rotation overlay reproduced, smoked, and published.'
+            echo "Source commit: $GITHUB_SHA"
+            echo "Base image: $base"
+            echo "Public key SHA-256: $(sha256sum "$context/issuer-public.der" | cut -d ' ' -f 1)"
+            echo "Image ID: $(docker image inspect --format '{{.Id}}' "$image")"
+            echo "Image ref: $repository@$digest"
+          } >> "$GITHUB_STEP_SUMMARY"
