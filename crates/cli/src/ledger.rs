@@ -3,11 +3,12 @@
 
 use super::{exhausted, print_json, required};
 use std::path::PathBuf;
-use zrpc_lifecycle::controller::TrackedCvm;
+use zrpc_lifecycle::controller::{ComputeStopBasis, RateBasisEntry, TrackedCvm};
 
 pub(super) const USAGE: &str = r"zrpc lifecycle ledger init --original-binding FILE --store-directory DIR --experiment-id ID --workspace-id ID --deletion-deadline UNIX_SECONDS --initial-cost-microusd INTEGER
 zrpc lifecycle ledger record-attempt --original-binding FILE --expected-generation INTEGER --attempt-id ID
 zrpc lifecycle ledger record-cvm --original-binding FILE --expected-generation INTEGER --attempt-id ID --cvm-id CANONICAL_ID --app-id ID (--instance-id ID | --instance-id-pending) --created-at UNIX_SECONDS --compute-and-disk-microusd-per-hour INTEGER
+zrpc lifecycle ledger record-rate-basis --original-binding FILE --expected-generation INTEGER --quote-reference REVIEWED_REFERENCE --rate CVM_ID:COMPUTE_MICROUSD_PER_HOUR:STORAGE_MICROUSD_PER_HOUR:tracked204|operator_manual [--rate ...]
 zrpc lifecycle ledger inspect --original-binding FILE
 zrpc lifecycle ledger discard-draft --original-binding FILE --expected-generation INTEGER
 zrpc lifecycle ledger --help
@@ -17,6 +18,7 @@ The deadline must be within 168 hours of that start and is never renewed. Initia
 Record the attempt before creation, then each returned canonical CVM identity and its conservative rate before the next resource.
 Use --instance-id-pending only when the provider reports null; it does not prove a usage-identity mapping.
 Identity, rates and creation time are operator assertions, not authenticated provider evidence or permission to spend.
+Rate basis is an append-only operator assertion that splits an existing combined rate. tracked204 requires a recorded successful DELETE outcome; operator_manual requires the operator's separate manual-deletion assertion and earlier observed presence. Both require a later complete authenticated absence before compute stops accruing in the model. Storage keeps accruing; prior cost floors never decrease. This does not establish final billing or disk cleanup.
 inspect is read-only, including when a draft is pending. It computes a current modeled floor without committing it.
 discard-draft explicitly removes only an uncommitted draft; it never promotes it, erases a committed intent or authorizes retry.
 No command resets or replaces an original/store. After uncertain writes, inspect retained state rather than initialize again.
@@ -41,6 +43,12 @@ enum Operation {
         generation: u64,
         attempt_id: String,
         target: TrackedCvm,
+    },
+    RateBasis {
+        original: PathBuf,
+        generation: u64,
+        quote_reference: String,
+        entries: Vec<RateBasisEntry>,
     },
     Inspect {
         original: PathBuf,
@@ -82,6 +90,46 @@ fn pending_instance(args: &mut Vec<String>) -> Result<Option<String>, String> {
         (None, _) => text_arg(args, "--instance-id").map(Some),
     }
 }
+fn rate_entries(args: &mut Vec<String>) -> Result<Vec<RateBasisEntry>, String> {
+    let mut entries = Vec::new();
+    while let Some(index) = args.iter().position(|arg| arg == "--rate") {
+        args.remove(index);
+        let value = args
+            .get(index)
+            .ok_or("--rate requires CVM_ID:COMPUTE:STORAGE:DELETION_BASIS")?
+            .clone();
+        args.remove(index);
+        let mut parts = value.split(':');
+        let cvm_id = parts.next().unwrap_or_default();
+        let compute = parts.next().ok_or("--rate requires four fields")?;
+        let storage = parts.next().ok_or("--rate requires four fields")?;
+        let deletion_basis = parts.next().ok_or("--rate requires four fields")?;
+        if cvm_id.is_empty() || parts.next().is_some() {
+            return Err("--rate requires exactly four fields".into());
+        }
+        let deletion_basis = match deletion_basis {
+            "tracked204" => ComputeStopBasis::TrackedDelete204,
+            "operator_manual" => ComputeStopBasis::OperatorAssertedManualDeletion,
+            _ => return Err("unsupported deletion basis".into()),
+        };
+        if entries
+            .iter()
+            .any(|entry: &RateBasisEntry| entry.cvm_id == cvm_id)
+        {
+            return Err("duplicate rate basis target".into());
+        }
+        entries.push(RateBasisEntry {
+            cvm_id: cvm_id.to_owned(),
+            compute_microusd_per_hour: compute.parse().map_err(|_| "invalid compute rate")?,
+            storage_microusd_per_hour: storage.parse().map_err(|_| "invalid storage rate")?,
+            deletion_basis,
+        });
+    }
+    if entries.is_empty() {
+        return Err("at least one --rate is required".into());
+    }
+    Ok(entries)
+}
 fn parse(mut args: Vec<String>) -> Result<Operation, String> {
     if args.is_empty() {
         return Err("ledger operation required; use lifecycle ledger --help".into());
@@ -116,6 +164,12 @@ fn parse(mut args: Vec<String>) -> Result<Operation, String> {
                     "--compute-and-disk-microusd-per-hour",
                 )?,
             },
+        },
+        "record-rate-basis" => Operation::RateBasis {
+            original,
+            generation: number(&mut args, "--expected-generation")?,
+            quote_reference: text_arg(&mut args, "--quote-reference")?,
+            entries: rate_entries(&mut args)?,
         },
         "inspect" => Operation::Inspect { original },
         "discard-draft" => Operation::Discard {
@@ -182,6 +236,18 @@ fn execute(operation: Operation) -> Result<(), String> {
                 .record_cvm(generation, &attempt_id, target)
                 .map_err(|error| error.to_string())?;
             (store, "record_cvm", None)
+        }
+        Operation::RateBasis {
+            original,
+            generation,
+            quote_reference,
+            entries,
+        } => {
+            let mut store = LedgerStore::open(&original).map_err(|error| error.to_string())?;
+            store
+                .record_rate_basis(generation, quote_reference, entries)
+                .map_err(|error| error.to_string())?;
+            (store, "record_rate_basis", None)
         }
         Operation::Inspect { original } => (
             LedgerStore::open(&original).map_err(|error| error.to_string())?,
@@ -263,6 +329,14 @@ mod tests {
                 "--compute-and-disk-microusd-per-hour",
                 "1",
             ]),
+            "record-rate-basis" => args.extend([
+                "--expected-generation",
+                "0",
+                "--quote-reference",
+                "https://cloud.phala.com/about/pricing",
+                "--rate",
+                "cvm_synthetic:232000:11120:tracked204",
+            ]),
             "discard-draft" => args.extend(["--expected-generation", "0"]),
             _ => (),
         }
@@ -274,6 +348,7 @@ mod tests {
             "init",
             "record-attempt",
             "record-cvm",
+            "record-rate-basis",
             "inspect",
             "discard-draft",
         ] {
@@ -327,6 +402,12 @@ mod tests {
             ),
             ("record-cvm", "--created-at", "-1"),
             ("record-cvm", "--compute-and-disk-microusd-per-hour", "1.5"),
+            (
+                "record-rate-basis",
+                "--rate",
+                "cvm_synthetic:bad:11120:tracked204",
+            ),
+            ("record-rate-basis", "--quote-reference", " "),
         ] {
             let mut args = arguments(command);
             let index = args.iter().position(|arg| arg == flag).unwrap();
