@@ -11,6 +11,7 @@ guest image or private mode.
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tomllib
@@ -52,10 +53,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def github_json(path):
     if path not in (f"git/commits/{COMMIT}", f"actions/runs/{RUN_ID}"):
         raise Refusal("unreviewed GitHub API path")
+    headers = {"Accept": "application/vnd.github+json", "Cache-Control": "no-cache, no-store, max-age=0",
+               "Pragma": "no-cache", "Accept-Encoding": "identity"}
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         API + path,
-        headers={"Accept": "application/vnd.github+json", "Cache-Control": "no-cache, no-store, max-age=0",
-                 "Pragma": "no-cache", "Accept-Encoding": "identity"},
+        headers=headers,
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:

@@ -3,7 +3,9 @@ name: GCP native x86 Cargo dependency gate
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   native_cargo:
@@ -34,6 +36,8 @@ jobs:
 
       - name: Check both live source policies before any dependency fetch
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           source="$GITHUB_WORKSPACE/source"
