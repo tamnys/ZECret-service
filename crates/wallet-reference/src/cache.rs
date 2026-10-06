@@ -203,7 +203,55 @@ impl BlockCache for SqliteBlockCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcash_client_backend::data_api::scanning::ScanPriority;
+    use zcash_client_backend::data_api::{
+        scanning::ScanPriority,
+        testing::{
+            CacheInsertionResult, TestCache, orchard::OrchardPoolTester, pool::dsl::TestDsl,
+            sapling::SaplingPoolTester,
+        },
+        wallet::ConfirmationsPolicy,
+    };
+    use zcash_client_sqlite::testing::db::TestDbFactory;
+    use zcash_protocol::{TxId, value::Zatoshis};
+
+    struct TestInsertion(Vec<TxId>);
+
+    impl CacheInsertionResult for TestInsertion {
+        fn txids(&self) -> &[TxId] {
+            &self.0
+        }
+    }
+
+    // The maintained test builder generates encrypted notes. Route its block
+    // inserts and scans through the cache used by the reference reader.
+    impl TestCache for SqliteBlockCache {
+        type BsError = CacheError;
+        type BlockSource = Self;
+        type InsertResult = TestInsertion;
+
+        fn block_source(&self) -> &Self::BlockSource {
+            self
+        }
+
+        fn insert(&mut self, block: &CompactBlock) -> Self::InsertResult {
+            let conn = self.0.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO compact_blocks(height, payload) VALUES(?1, ?2)",
+                params![block.height as i64, block.encode_to_vec()],
+            )
+            .unwrap();
+            TestInsertion(block.vtx.iter().map(|tx| tx.txid()).collect())
+        }
+
+        fn truncate_to_height(&mut self, height: BlockHeight) {
+            let conn = self.0.lock().unwrap();
+            conn.execute(
+                "DELETE FROM compact_blocks WHERE height > ?1",
+                params![i64::from(u32::from(height))],
+            )
+            .unwrap();
+        }
+    }
 
     const PUBLIC_BLOCK_4465070: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -308,5 +356,35 @@ mod tests {
             })
             .unwrap();
         assert_eq!(scanner_heights, [4_465_070, 4_465_071]);
+    }
+
+    #[test]
+    fn synthetic_sapling_receipt_is_found_through_reference_cache() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario = TestDsl::with_sapling_birthday_account(TestDbFactory::default(), cache)
+            .build::<SaplingPoolTester>();
+        scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(60_000));
+        let balance = scenario
+            .get_account_balance(ConfirmationsPolicy::MIN)
+            .unwrap();
+        assert_eq!(
+            balance.sapling_balance().total(),
+            Zatoshis::const_from_u64(60_000)
+        );
+    }
+
+    #[test]
+    fn synthetic_orchard_receipt_is_found_through_reference_cache() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario = TestDsl::with_sapling_birthday_account(TestDbFactory::default(), cache)
+            .build::<OrchardPoolTester>();
+        scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(60_000));
+        let balance = scenario
+            .get_account_balance(ConfirmationsPolicy::MIN)
+            .unwrap();
+        assert_eq!(
+            balance.orchard_balance().total(),
+            Zatoshis::const_from_u64(60_000)
+        );
     }
 }
