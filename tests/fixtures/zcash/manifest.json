@@ -2,6 +2,18 @@
   "schema": "zcash-public-response-fixtures-v1",
   "private_accepted": false,
   "sources": {
+    "testnet_compact_nu7": {
+      "endpoint": "https://testnet.zec.rocks/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockRange",
+      "method": "GetBlockRange",
+      "request_heights_inclusive": [4465026, 4465126],
+      "retrieved_utc": "2026-10-06T00:44:26Z",
+      "lightd_info_chain_name": "test",
+      "lightd_info_backend": "Zebra 7.0.0-rc.0",
+      "lightd_info_grpc_response_sha256": "b3ff7c85e8aacc9b8f4a0b6b9d86cd59fb21a39b2cddaad8322ef5f8afe50769",
+      "grpc_response_bytes": 35336,
+      "grpc_response_sha256": "d7b8dee0f4f9bf20f01738a7d04825a9cd45e9624b72450bebfd07b3522e743d",
+      "grpc_status": 0
+    },
     "transaction_vectors": {
       "repository": "https://github.com/zcash/librustzcash",
       "commit": "97aefdc39a037da9c4f19a0e8a450d2c7932f53e",
@@ -114,7 +126,23 @@
       "block_hash_rpc": "025579869bcf52a989337342f5f57a84f3a28b968f7d6a8307902b065a668d23",
       "file_bytes": 3427,
       "file_sha256": "3af733d2eac1e166b40c1d1c73874de4e16e29ded0143c3302da6c6c50f4cd2b"
+    },
+    "testnet-compact-4465070.pb": {
+      "encoding": "unframed CompactBlock protobuf",
+      "source": "testnet_compact_nu7",
+      "network_provenance": "public testnet block 4465070; endpoint assertion, not a consensus proof",
+      "block_hash_rpc": "0000c3fbeefb33b0813327abf05e4adbd84ab63cb39ac6c12f4b7b327c2bae93",
+      "file_bytes": 289,
+      "file_sha256": "90015ee7be4ddd5964e1a09a4de9e9f5793d4ae70b7fa42f3c8e315d54b52ef3"
+    },
+    "testnet-compact-4465071.pb": {
+      "encoding": "unframed CompactBlock protobuf",
+      "source": "testnet_compact_nu7",
+      "network_provenance": "public testnet block 4465071; endpoint assertion, not a consensus proof",
+      "block_hash_rpc": "000001c705c1aa6035af6d97feaf96fafa35e219bfa4e51017a1a0722a962736",
+      "file_bytes": 3349,
+      "file_sha256": "a74bbced165c41d1d19e46aeb5df92d0fef0df43fbe917288b54385f2b297b4d"
     }
   },
-  "derivation": "Source arrays and JSON extracted as data; txid RPC conversion reverses upstream 32-byte txid; no protocol hash computed."
+  "derivation": "Source arrays and JSON extracted as data; compact-block gRPC frames stripped without changing message bytes; txid RPC conversion reverses upstream 32-byte txid; no protocol hash computed."
 }
