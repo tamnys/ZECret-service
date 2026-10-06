@@ -26,3 +26,4 @@ zrpc-wallet-sdk = { path = "../wallet-sdk" }
 [dev-dependencies]
 tempfile = "=3.27.0"
 hex.workspace = true
+zcash_client_sqlite = { workspace = true, features = ["test-dependencies"] }
