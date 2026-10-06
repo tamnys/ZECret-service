@@ -312,8 +312,11 @@ fn open_existing_wallet(wallet_path: &Path) -> Result<LocalWallet, Box<dyn Error
 
     // The wallet database is never mounted into or opened by the local bridge.
     // It must have been initialized with viewing keys by the wallet application.
-    let wallet =
+    let mut wallet =
         WalletDb::from_connection(conn, Network::TestNetwork, SystemClock, UnwrapErr(SysRng));
+    // The maintained wallet schema can change across dependency upgrades.
+    // Apply its idempotent migrations before any read or scan of an existing DB.
+    init_wallet_db(&mut wallet, None)?;
     if wallet.get_account_ids()?.is_empty() {
         return Err("wallet database has no locally imported viewing-key account".into());
     }
