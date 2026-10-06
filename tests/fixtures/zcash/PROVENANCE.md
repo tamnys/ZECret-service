@@ -61,6 +61,20 @@ not current observations or fields authenticated by the header hash.
 The header data is used under Zebra's MIT license, preserved in
 `LICENSE-MIT-zebra`, including the Zcash Foundation copyright notice.
 
+## Public NU7 compact blocks
+
+`testnet-compact-4465070.pb` and `testnet-compact-4465071.pb` are unframed
+`CompactBlock` protobuf messages extracted from a successful
+[`GetBlockRange`](https://testnet.zec.rocks/) response for public testnet heights
+4,465,026 through 4,465,126 on 2026-10-06. The endpoint reported `test` and
+`Zebra 7.0.0-rc.0` through `GetLightdInfo`. The manifest identifies the exact
+gRPC response and extracted message bytes by SHA-256, along with the endpoint's
+block hashes. No wallet address or viewing key was sent to fetch these blocks.
+
+These public server responses exercise parsing, pool-data shape, and adjacent
+block continuity. They do not prove consensus validity, wallet receipt or spend
+ownership, attestation, release approval, or private-mode acceptance.
+
 ## Identity checks
 
 Expected block/transaction identifiers come from upstream fixtures. Git blob
