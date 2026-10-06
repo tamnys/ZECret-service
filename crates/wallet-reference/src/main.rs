@@ -9,7 +9,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fs::{self, OpenOptions},
-    io::Read,
+    io::{Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -19,12 +19,15 @@ use zcash_client_backend::{
     data_api::chain::BlockCache,
     data_api::wallet::{ConfirmationsPolicy, decrypt_and_store_transaction},
     data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite},
-    proto::service::{BlockId, BlockRange, ChainSpec, Empty, TransparentAddressBlockFilter},
+    proto::service::{
+        BlockId, BlockRange, ChainSpec, Empty, GetMempoolTxRequest, RawTransaction,
+        TransparentAddressBlockFilter, TxFilter,
+    },
     sync,
 };
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_primitives::block::BlockHash;
+use zcash_primitives::{block::BlockHash, transaction::Transaction};
 use zcash_protocol::consensus::{BlockHeight, Network};
 use zeroize::Zeroize;
 use zrpc_payments::PrivateDirectory;
@@ -438,6 +441,21 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn checked_pending_transaction(
+    expected_txid: &[u8],
+    raw: &RawTransaction,
+    next_height: BlockHeight,
+) -> Result<Transaction, &'static str> {
+    if expected_txid.len() != 32 {
+        return Err("mempool returned an invalid transaction identifier");
+    }
+    let transaction = enhance::decode_pending_transaction(raw, next_height)?;
+    if transaction.txid().as_ref().as_slice() != expected_txid {
+        return Err("mempool returned a transaction with the wrong identifier");
+    }
+    Ok(transaction)
+}
+
 async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     let usage = "usage: zrpc-wallet-reference pending LOOPBACK_HOST:PORT CAPABILITY_DIR WALLET_DB";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
@@ -468,19 +486,96 @@ async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             .checked_add(1)
             .ok_or("wallet chain height overflow")?,
     );
-    let mut stream = client.get_mempool_stream(Empty {}).await?.into_inner();
-    let mut processed = 0_u64;
-    while let Some(raw) = stream.message().await? {
-        let transaction = enhance::decode_pending_transaction(&raw, next_height)?;
-        decrypt_and_store_transaction(&Network::TestNetwork, &mut wallet, &transaction, None)?;
-        processed = processed
+    // The pinned Zebra GetMempoolStream stays open until the next block, so it
+    // cannot finish a one-shot read when the chain is quiet. Its finite
+    // GetMempoolTx result contains shielded compact transactions only.
+    let mut stream = client
+        .get_mempool_tx(GetMempoolTxRequest {
+            exclude_txid_suffixes: vec![],
+            pool_types: vec![],
+        })
+        .await?
+        .into_inner();
+    // The bridge serializes wallet RPCs while a stream is active. Finish this
+    // stream before asking for full transactions on the same local client.
+    let mut ids =
+        enhance::open_history_stage(wallet_path.parent().ok_or("wallet path has no parent")?)?;
+    let mut staged_count = 0_u64;
+    while let Some(compact) = stream.message().await? {
+        if compact.txid.len() != 32 {
+            return Err("mempool returned an invalid transaction identifier".into());
+        }
+        ids.write_all(&compact.txid)?;
+        staged_count = staged_count
             .checked_add(1)
             .ok_or("mempool transaction count overflow")?;
     }
-    // Zebra closes this stream at a new best-chain block. Transactions seen
-    // during the stream are observations, never a completed current snapshot
-    // or evidence that a disappeared transaction was confirmed.
-    println!("mempool_transactions_processed={processed} status=observed_rescan_to_reconcile");
+    drop(stream);
+    ids.seek(SeekFrom::Start(0))?;
+    // Stage full transactions in an unnamed local file so a failed read
+    // cannot partially update the wallet or consume unbounded memory.
+    let mut stage =
+        enhance::open_history_stage(wallet_path.parent().ok_or("wallet path has no parent")?)?;
+    for _ in 0..staged_count {
+        let mut txid = [0_u8; 32];
+        ids.read_exact(&mut txid)?;
+        let raw = client
+            .get_transaction(TxFilter {
+                block: None,
+                index: 0,
+                hash: txid.to_vec(),
+            })
+            .await?
+            .into_inner();
+        checked_pending_transaction(&txid, &raw, next_height)?;
+        stage.write_all(&txid)?;
+        stage.write_all(&u64::try_from(raw.data.len())?.to_le_bytes())?;
+        stage.write_all(&raw.data)?;
+    }
+    if ids.stream_position()? != ids.metadata()?.len() {
+        return Err("staged mempool identifiers have trailing bytes".into());
+    }
+    let after = client.get_latest_block(ChainSpec {}).await?.into_inner();
+    if !same_scanned_tip(local_tip, local_hash, &after) {
+        return Err("node tip changed during mempool read; scan again first".into());
+    }
+    stage.seek(SeekFrom::Start(0))?;
+    wallet.transactionally(|wdb| -> Result<(), Box<dyn Error>> {
+        for _ in 0..staged_count {
+            let mut txid = [0_u8; 32];
+            stage.read_exact(&mut txid)?;
+            let mut length = [0_u8; 8];
+            stage.read_exact(&mut length)?;
+            let length = u64::from_le_bytes(length);
+            let remaining = stage
+                .metadata()?
+                .len()
+                .checked_sub(stage.stream_position()?)
+                .ok_or("staged mempool data is incomplete")?;
+            if length > remaining {
+                return Err("staged mempool data is incomplete".into());
+            }
+            let mut data = Vec::new();
+            data.try_reserve_exact(usize::try_from(length)?)?;
+            data.resize(usize::try_from(length)?, 0);
+            stage.read_exact(&mut data)?;
+            let transaction = checked_pending_transaction(
+                &txid,
+                &RawTransaction { data, height: 0 },
+                next_height,
+            )?;
+            decrypt_and_store_transaction(&Network::TestNetwork, wdb, &transaction, None)?;
+        }
+        if stage.stream_position()? != stage.metadata()?.len() {
+            return Err("staged mempool data has trailing bytes".into());
+        }
+        Ok(())
+    })?;
+    // This is an observation, not a complete mempool snapshot: Zebra omits
+    // transparent-only transactions and the mempool may change during reads.
+    println!(
+        "shielded_mempool_transactions_processed={staged_count} status=observed_incomplete_rescan_to_reconcile"
+    );
     Ok(())
 }
 
@@ -534,5 +629,28 @@ mod tests {
                 hash: hash.iter().rev().copied().collect(),
             }
         ));
+    }
+
+    #[test]
+    fn pending_compact_id_must_match_unmined_raw_transaction() {
+        let data =
+            hex::decode(include_str!("../../../tests/fixtures/zcash/testnet-v4-tx.hex").trim())
+                .unwrap();
+        let next_height = BlockHeight::from_u32(280_003);
+        let raw = RawTransaction { data, height: 0 };
+        let decoded = enhance::decode_pending_transaction(&raw, next_height).unwrap();
+        let txid = decoded.txid();
+        let expected = txid.as_ref().as_slice();
+        assert!(checked_pending_transaction(expected, &raw, next_height).is_ok());
+        assert!(checked_pending_transaction(&expected[..31], &raw, next_height).is_err());
+        assert!(checked_pending_transaction(&[0; 32], &raw, next_height).is_err());
+        assert!(
+            checked_pending_transaction(
+                expected,
+                &RawTransaction { height: 1, ..raw },
+                next_height
+            )
+            .is_err()
+        );
     }
 }
