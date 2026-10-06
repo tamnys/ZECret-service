@@ -300,8 +300,23 @@ async fn http2_quote_uses_same_tls_exporter_and_does_not_enable_http1_rpc() {
             .body(Full::new(Bytes::from_static(&[0, 0, 0, 0, 0])))
             .unwrap()
     };
+    let snapshot_request = || {
+        Request::post(format!(
+            "https://fixture.invalid{}",
+            ReadMethod::GetMempoolSnapshot.path()
+        ))
+        .header(header::CONTENT_TYPE, "application/grpc")
+        .body(Full::new(Bytes::from_static(&[0, 0, 0, 0, 0])))
+        .unwrap()
+    };
     assert_eq!(
         read(client.send_request(wallet_request()).await.unwrap())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        read(client.send_request(snapshot_request()).await.unwrap())
             .await
             .0,
         StatusCode::FORBIDDEN
@@ -339,6 +354,8 @@ async fn http2_quote_uses_same_tls_exporter_and_does_not_enable_http1_rpc() {
     let (status, _) = read(client.send_request(wallet_request()).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = read(client.send_request(wallet_request()).await.unwrap()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = read(client.send_request(snapshot_request()).await.unwrap()).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = read(
         client

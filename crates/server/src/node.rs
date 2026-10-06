@@ -14,6 +14,7 @@ use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     fmt,
     net::SocketAddrV4,
     path::Path,
@@ -24,9 +25,14 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpStream, sync::Semaphore};
+use zcash_protocol::TxId;
 use zrpc_protocol::{
     BACKEND_TIMEOUT_SECONDS, BlockRef, EXECUTING_QUERIES, ErrorCode, MAX_RESPONSE_BYTES, Method,
     QUEUED_QUERIES, Request, SafeError, Verbosity, parse_request, validate_chain_context,
+};
+use zrpc_wallet_read::{
+    backend::{MempoolSnapshot as WalletMempoolSnapshot, MempoolSnapshotSource},
+    snapshot_wire,
 };
 
 /// Only an operator-provided internal cookie is accepted, never browser headers.
@@ -76,6 +82,14 @@ struct Inner {
     admitted: Semaphore,
     executing: Semaphore,
     next_id: AtomicU64,
+}
+
+/// One node-reported mempool ID set, anchored to an unchanged testnet tip.
+/// The mempool can still change independently of the chain tip, so callers
+/// must not treat this as a globally atomic or consensus-approved set.
+pub(crate) struct MempoolSnapshot {
+    pub tip: BlockRef,
+    pub txids: Vec<TxId>,
 }
 
 impl fmt::Debug for LocalNode {
@@ -136,6 +150,57 @@ impl LocalNode {
         // Tokio cannot preempt a synchronous maintained decoder/hash operation.
         // Its result must still not escape after the original operation deadline.
         finish_before_deadline(deadline, result)
+    }
+
+    /// Internal typed supplier for wallet pending checks. This method is not
+    /// reachable through the public JSON-RPC request parser or its allowlist.
+    pub(crate) async fn mempool_snapshot(&self) -> Result<MempoolSnapshot, SafeError> {
+        let _admitted = self.0.admitted.try_acquire().map_err(|_| {
+            SafeError::new(ErrorCode::BackendBusy, "The bounded backend queue is full.")
+        })?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(BACKEND_TIMEOUT_SECONDS);
+        let result = tokio::time::timeout_at(deadline, async {
+            let _executing = self
+                .0
+                .executing
+                .acquire()
+                .await
+                .map_err(|_| unavailable())?;
+            self.exchange_mempool_snapshot().await
+        })
+        .await
+        .map_err(|_| timed_out())?;
+        finish_before_deadline(deadline, result)
+    }
+
+    async fn exchange_mempool_snapshot(&self) -> Result<MempoolSnapshot, SafeError> {
+        let socket = TcpStream::connect(self.0.address)
+            .await
+            .map_err(|_| unavailable())?;
+        let (mut sender, connection) = http1::handshake(TokioIo::new(socket))
+            .await
+            .map_err(|_| unavailable())?;
+        let _driver = AbortOnDrop(tokio::spawn(async move {
+            let _ = connection.await;
+        }));
+        let before = self
+            .call(&mut sender, "getblockchaininfo", json!([]))
+            .await?;
+        let tip = testnet_tip(&before)?;
+        let response = self
+            .call(&mut sender, "getrawmempool", json!([false]))
+            .await?;
+        let txids = parse_mempool_txids(&response)?;
+        let after = self
+            .call(&mut sender, "getblockchaininfo", json!([]))
+            .await?;
+        if testnet_tip(&after)? != tip {
+            return Err(SafeError::new(
+                ErrorCode::BlockMismatch,
+                "The internal node tip changed during the mempool read.",
+            ));
+        }
+        Ok(MempoolSnapshot { tip, txids })
     }
 
     async fn exchange(&self, request: &Request) -> Result<Value, SafeError> {
@@ -283,6 +348,31 @@ impl LocalNode {
     }
 }
 
+#[tonic::async_trait]
+impl MempoolSnapshotSource for LocalNode {
+    async fn mempool_snapshot(&self) -> Result<WalletMempoolSnapshot, tonic::Status> {
+        let snapshot = LocalNode::mempool_snapshot(self).await.map_err(|error| {
+            if error.code == ErrorCode::BlockMismatch {
+                tonic::Status::aborted("Wallet node tip changed during the mempool read.")
+            } else if error.code == ErrorCode::InvalidBackendResponse {
+                tonic::Status::data_loss("Invalid wallet node mempool response.")
+            } else {
+                tonic::Status::unavailable("Wallet node is unavailable.")
+            }
+        })?;
+        let mut hash = hex::decode(snapshot.tip.hash.as_str())
+            .map_err(|_| tonic::Status::data_loss("Invalid wallet node block hash."))?;
+        hash.reverse();
+        Ok(WalletMempoolSnapshot {
+            tip: snapshot_wire::SnapshotTip {
+                height: u64::from(snapshot.tip.height),
+                hash,
+            },
+            txids: snapshot.txids.into_iter().map(|id| *id.as_ref()).collect(),
+        })
+    }
+}
+
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -334,6 +424,37 @@ fn is_hash(value: &Value) -> bool {
     value
         .as_str()
         .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn testnet_tip(info: &Value) -> Result<BlockRef, SafeError> {
+    if info.get("chain").and_then(Value::as_str) != Some("test") {
+        return Err(SafeError::new(
+            ErrorCode::WrongNetwork,
+            "The internal node did not report Zcash testnet.",
+        ));
+    }
+    BlockRef::from_parts(&info["blocks"], &info["bestblockhash"])
+}
+
+fn parse_mempool_txids(value: &Value) -> Result<Vec<TxId>, SafeError> {
+    let ids = value.as_array().ok_or_else(invalid_response)?;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(ids.len())
+        .map_err(|_| too_large())?;
+    for id in ids {
+        let text = id.as_str().ok_or_else(invalid_response)?;
+        if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(invalid_response());
+        }
+        let txid = TxId::from_hex(text).ok_or_else(invalid_response)?;
+        if !seen.insert(txid) {
+            return Err(invalid_response());
+        }
+        result.push(txid);
+    }
+    Ok(result)
 }
 
 fn validate_result(method: &Method, result: &Value) -> Result<(), SafeError> {
@@ -467,6 +588,8 @@ mod tests {
         HeaderFieldMismatch,
         BytesMismatch,
         HeaderRawStall,
+        SnapshotTipChanged,
+        SnapshotDistinctHash,
     }
     struct Seen {
         body: Value,
@@ -534,7 +657,13 @@ mod tests {
                                     let mut result = match method.as_str() {
                                         "getblockchaininfo" => if matches!(mode, Mode::Mainnet) {
                                             json!({"chain":"main"})
+                                        } else if matches!(mode, Mode::SnapshotDistinctHash) {
+                                            json!({"chain":"test", "blocks":42, "bestblockhash":hex::encode((0_u8..32).collect::<Vec<_>>())})
+                                        } else if matches!(mode, Mode::SnapshotTipChanged)
+                                            && seen.lock().unwrap().iter().any(|request| request.body["method"] == "getrawmempool") {
+                                            json!({"chain":"test", "blocks":43, "bestblockhash":"cd".repeat(32)})
                                         } else { chain() },
+                                        "getrawmempool" => json!([TX_ID, "ab".repeat(32)]),
                                         "getblockhash" => json!("ab".repeat(32)),
                                         "getaddressutxos" => json!({"height":43,"hash":"cd".repeat(32),"utxos":[{
                                             "address":params[0]["addresses"][0],"txid":"ab".repeat(32),"outputIndex":0,"satoshis":7,"height":40
@@ -814,6 +943,77 @@ mod tests {
             .unwrap();
         assert_eq!(companion[1].body["params"], json!([HEADER_HASH, true]));
         assert_eq!(companion[2].body["params"], json!([HEADER_HASH, false]));
+    }
+
+    #[test]
+    fn mempool_ids_reject_malformed_or_duplicate_node_results() {
+        assert!(parse_mempool_txids(&json!([])).unwrap().is_empty());
+        for value in [
+            json!({}),
+            json!(["bad"]),
+            json!([42]),
+            json!([TX_ID, TX_ID]),
+            json!([TX_ID, TX_ID.to_ascii_uppercase()]),
+        ] {
+            assert_eq!(
+                parse_mempool_txids(&value).err().unwrap().code,
+                ErrorCode::InvalidBackendResponse
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_mempool_id_read_uses_one_testnet_connection_and_tip() {
+        let fake = fake(Mode::Good).await;
+        let snapshot = fake.node.mempool_snapshot().await.unwrap();
+        assert_eq!(snapshot.tip.height, 42);
+        assert_eq!(snapshot.tip.hash.as_str(), "ab".repeat(32));
+        assert_eq!(snapshot.txids.len(), 2);
+        assert_eq!(snapshot.txids[0], TxId::from_hex(TX_ID).unwrap());
+        let seen = fake.seen.lock().unwrap();
+        let methods: Vec<_> = seen
+            .iter()
+            .map(|request| request.body["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            methods,
+            ["getblockchaininfo", "getrawmempool", "getblockchaininfo"]
+        );
+        assert!(
+            seen.iter()
+                .all(|request| request.connection == seen[0].connection)
+        );
+        assert_eq!(seen[1].body["params"], json!([false]));
+    }
+
+    #[tokio::test]
+    async fn wallet_snapshot_converts_display_hashes_to_protocol_byte_order() {
+        let fake = fake(Mode::SnapshotDistinctHash).await;
+        let snapshot = MempoolSnapshotSource::mempool_snapshot(&fake.node)
+            .await
+            .unwrap();
+        assert_eq!(snapshot.tip.height, 42);
+        assert_eq!(snapshot.tip.hash, (0_u8..32).rev().collect::<Vec<_>>());
+        assert_eq!(
+            snapshot.txids[0].as_slice(),
+            TxId::from_hex(TX_ID).unwrap().as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn mempool_id_read_rejects_wrong_network_changed_tip_and_bad_reply() {
+        for (mode, expected, calls) in [
+            (Mode::Mainnet, ErrorCode::WrongNetwork, 1),
+            (Mode::SnapshotTipChanged, ErrorCode::BlockMismatch, 3),
+            (Mode::WrongId, ErrorCode::InvalidBackendResponse, 2),
+        ] {
+            let fake = fake(mode).await;
+            assert_eq!(
+                fake.node.mempool_snapshot().await.err().unwrap().code,
+                expected
+            );
+            assert_eq!(fake.seen.lock().unwrap().len(), calls);
+        }
     }
 
     #[tokio::test]

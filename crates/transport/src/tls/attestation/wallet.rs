@@ -18,9 +18,10 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
 };
 use zrpc_protocol::{ErrorCode, SafeError};
-use zrpc_wallet_read::{WalletReadRequest, wire};
+use zrpc_wallet_read::{WalletReadRequest, snapshot_wire, wire};
 
 type Client = wire::compact_tx_streamer_client::CompactTxStreamerClient<RetainedH2>;
+type SnapshotClient = snapshot_wire::snapshot_read_client::SnapshotReadClient<RetainedH2>;
 
 fn bad_request() -> SafeError {
     SafeError::new(
@@ -165,6 +166,7 @@ pub enum WalletReadResult {
     TaddressBalanceStream(wire::Balance),
     MempoolTx(WalletReadStream<wire::CompactTx>),
     MempoolStream(WalletReadStream<wire::RawTransaction>),
+    MempoolSnapshot(WalletReadStream<snapshot_wire::SnapshotItem>),
     TreeState(wire::TreeState),
     LatestTreeState(wire::TreeState),
     SubtreeRoots(WalletReadStream<wire::SubtreeRoot>),
@@ -199,6 +201,20 @@ impl PhalaTrustedWalletSession {
         let origin =
             Uri::try_from(format!("https://{}", self.0.authority)).map_err(|_| unavailable())?;
         Ok(Client::with_origin(
+            RetainedH2 {
+                sender: sender.clone(),
+            },
+            origin,
+        ))
+    }
+
+    fn snapshot_client(&self) -> Result<SnapshotClient, SafeError> {
+        let SessionSender::Wallet(sender) = &self.0.session.sender else {
+            return Err(unavailable());
+        };
+        let origin =
+            Uri::try_from(format!("https://{}", self.0.authority)).map_err(|_| unavailable())?;
+        Ok(SnapshotClient::with_origin(
             RetainedH2 {
                 sender: sender.clone(),
             },
@@ -273,6 +289,11 @@ impl PhalaTrustedWalletSession {
         request: WalletReadRequest,
         authorization: &MetadataValue<Ascii>,
     ) -> Result<WalletReadResult, SafeError> {
+        let mut snapshot_client = if matches!(&request, WalletReadRequest::MempoolSnapshot(_)) {
+            Some(self.snapshot_client()?)
+        } else {
+            None
+        };
         let deadline = self.0.deadline;
         let session = self.0.session;
         macro_rules! unary {
@@ -342,6 +363,21 @@ impl PhalaTrustedWalletSession {
             WalletReadRequest::MempoolTx(value) => streamed!(get_mempool_tx, value, MempoolTx),
             WalletReadRequest::MempoolStream(value) => {
                 streamed!(get_mempool_stream, value, MempoolStream)
+            }
+            WalletReadRequest::MempoolSnapshot(value) => {
+                let response = snapshot_client
+                    .as_mut()
+                    .ok_or_else(unavailable)?
+                    .get_mempool_snapshot(with_authorization(value, authorization))
+                    .await
+                    .map_err(status_error)?
+                    .into_inner();
+                check_live(&session, deadline)?;
+                WalletReadResult::MempoolSnapshot(WalletReadStream {
+                    inner: response,
+                    session,
+                    deadline,
+                })
             }
             WalletReadRequest::TreeState(value) => unary!(get_tree_state, value, TreeState),
             WalletReadRequest::LatestTreeState(value) => {

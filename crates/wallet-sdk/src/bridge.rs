@@ -28,10 +28,15 @@ use wire::compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServe
 use zeroize::Zeroize;
 use zrpc_payments::{PrivateDirectory, SecretBytes};
 use zrpc_protocol::{ErrorCode, SafeError};
+pub use zrpc_wallet_read::snapshot_wire;
+use zrpc_wallet_read::snapshot_wire::snapshot_read_server::{SnapshotRead, SnapshotReadServer};
 use zrpc_wallet_read::{WalletReadRequest, wire};
 
 type ReadStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 pub type LocalClient = wire::compact_tx_streamer_client::CompactTxStreamerClient<
+    tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+>;
+pub type LocalSnapshotClient = snapshot_wire::snapshot_read_client::SnapshotReadClient<
     tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
 >;
 pub type MaintainedScannerClient =
@@ -230,6 +235,13 @@ impl LocalWalletAdapter {
         &mut self.client
     }
 
+    pub fn snapshot_client(&self) -> LocalSnapshotClient {
+        snapshot_wire::snapshot_read_client::SnapshotReadClient::with_interceptor(
+            self.channel.clone(),
+            self.interceptor.clone(),
+        )
+    }
+
     /// Uses the maintained `zcash_client_backend` generated protobuf types and
     /// their native sync APIs, while retaining the bridge's local capability.
     pub fn maintained_scanner_client(&self) -> MaintainedScannerClient {
@@ -285,6 +297,10 @@ impl WalletBridge {
             return Err(unavailable());
         }
         let capability = self.capability.clone();
+        let snapshot_capability = self.capability.clone();
+        let snapshot_service = SnapshotReadServer::with_interceptor(self.clone(), move |request| {
+            authenticate(request, &snapshot_capability)
+        });
         let service = CompactTxStreamerServer::with_interceptor(self, move |request| {
             authenticate(request, &capability)
         });
@@ -294,6 +310,7 @@ impl WalletBridge {
         });
         Server::builder()
             .add_service(service)
+            .add_service(snapshot_service)
             .serve_with_incoming_shutdown(incoming, shutdown)
             .await
             .map_err(|_| unavailable())
@@ -678,6 +695,24 @@ impl CompactTxStreamer for WalletBridge {
     ) -> Result<Response<wire::PingResponse>, Status> {
         Err(Status::permission_denied(
             "Testing methods are unavailable.",
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl SnapshotRead for WalletBridge {
+    type GetMempoolSnapshotStream = ReadStream<snapshot_wire::SnapshotItem>;
+
+    async fn get_mempool_snapshot(
+        &self,
+        request: Request<snapshot_wire::SnapshotRequest>,
+    ) -> Result<Response<Self::GetMempoolSnapshotStream>, Status> {
+        Ok(self.streamed(
+            WalletReadRequest::MempoolSnapshot(request.into_inner()),
+            |item| match item {
+                WalletReadItem::MempoolSnapshot(value) => Ok(value),
+                _ => Err(wrong_result()),
+            },
         ))
     }
 }

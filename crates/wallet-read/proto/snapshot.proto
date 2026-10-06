@@ -1,0 +1,26 @@
+// Project-specific, read-only extension. The pinned upstream lightwalletd
+// CompactTxStreamer protobuf remains unchanged.
+syntax = "proto3";
+package zrpc.wallet.snapshot.v1;
+
+message SnapshotRequest {}
+
+message SnapshotTip {
+    uint64 height = 1;
+    // Zcash protocol/internal byte order, like lightwalletd BlockID.hash.
+    bytes hash = 2;
+}
+
+message SnapshotItem {
+    oneof body {
+        SnapshotTip tip = 1;
+        // Zcash protocol/internal byte order, never display hex.
+        bytes txid = 2;
+    }
+}
+
+service SnapshotRead {
+    // Finite local-node mempool ID set with a stable chain-tip anchor.
+    // The first item is the tip; remaining items are IDs. EOF is required.
+    rpc GetMempoolSnapshot(SnapshotRequest) returns (stream SnapshotItem) {}
+}

@@ -4,13 +4,15 @@
 
 pub mod bridge;
 
-use std::{future::Future, sync::Mutex};
+use std::{collections::HashSet, future::Future, sync::Mutex};
 use zrpc_client::inspection::{PrivateEndpointConfig, connect_phala_trusted_wallet};
 use zrpc_payments::{ClientStore, IssuerPublic};
 use zrpc_protocol::{ErrorCode, SafeError};
 use zrpc_transport::WalletReadResult;
 use zrpc_verifier::PhalaTrustedPolicy;
-use zrpc_wallet_read::{RangeContinuity, ReadMethod, SubtreeContinuity, WalletReadRequest, wire};
+use zrpc_wallet_read::{
+    RangeContinuity, ReadMethod, SubtreeContinuity, WalletReadRequest, snapshot_wire, wire,
+};
 
 fn ticket_error() -> SafeError {
     SafeError::new(
@@ -42,6 +44,7 @@ pub enum WalletReadItem {
     TaddressBalanceStream(wire::Balance),
     MempoolTx(wire::CompactTx),
     MempoolStream(wire::RawTransaction),
+    MempoolSnapshot(snapshot_wire::SnapshotItem),
     TreeState(wire::TreeState),
     LatestTreeState(wire::TreeState),
     SubtreeRoots(wire::SubtreeRoot),
@@ -123,6 +126,30 @@ fn range_spec(request: &WalletReadRequest) -> Option<RangeSpec> {
         start: u32::try_from(range.start.as_ref()?.height).ok()?,
         end: u32::try_from(range.end.as_ref()?.height).ok()?,
     })
+}
+
+fn validate_snapshot_item(
+    item: &snapshot_wire::SnapshotItem,
+    has_tip: &mut bool,
+    seen: &mut HashSet<[u8; 32]>,
+) -> Result<(), SafeError> {
+    match item.body.as_ref() {
+        Some(snapshot_wire::snapshot_item::Body::Tip(tip))
+            if !*has_tip && tip.height <= u64::from(u32::MAX) && tip.hash.len() == 32 =>
+        {
+            *has_tip = true;
+            Ok(())
+        }
+        Some(snapshot_wire::snapshot_item::Body::Txid(id)) if *has_tip => {
+            let id: [u8; 32] = id.as_slice().try_into().map_err(|_| invalid_chain())?;
+            if seen.insert(id) {
+                Ok(())
+            } else {
+                Err(invalid_chain())
+            }
+        }
+        _ => Err(invalid_chain()),
+    }
 }
 
 /// One SDK instance serializes access to its durable ticket store. Every read
@@ -319,6 +346,17 @@ where
         WalletReadResult::TaddressBalanceStream(item) => emit!(TaddressBalanceStream, item),
         WalletReadResult::MempoolTx(mut value) => stream!(value, MempoolTx),
         WalletReadResult::MempoolStream(mut value) => stream!(value, MempoolStream),
+        WalletReadResult::MempoolSnapshot(mut value) => {
+            let mut has_tip = false;
+            let mut seen = HashSet::new();
+            while let Some(item) = value.next().await? {
+                validate_snapshot_item(&item, &mut has_tip, &mut seen)?;
+                emit!(MempoolSnapshot, item);
+            }
+            if !has_tip {
+                return Err(invalid_chain());
+            }
+        }
         WalletReadResult::TreeState(item) => {
             if !selected_block.is_some_and(|selected| selected_tree_state_matches(selected, &item))
             {
@@ -423,5 +461,44 @@ mod tests {
         assert!(!selected_tree_state_matches(wrong_selector, &tree));
         assert!(selected_tree_state_matches(BlockSpec::Height(42), &tree));
         assert!(!selected_tree_state_matches(BlockSpec::Height(43), &tree));
+    }
+
+    #[test]
+    fn mempool_snapshot_requires_one_tip_before_unique_protocol_order_ids() {
+        use snapshot_wire::snapshot_item::Body;
+        let tip = snapshot_wire::SnapshotItem {
+            body: Some(Body::Tip(snapshot_wire::SnapshotTip {
+                height: 42,
+                hash: vec![7; 32],
+            })),
+        };
+        let txid = snapshot_wire::SnapshotItem {
+            body: Some(Body::Txid(vec![8; 32])),
+        };
+        let mut has_tip = false;
+        let mut seen = HashSet::new();
+        assert!(validate_snapshot_item(&txid, &mut has_tip, &mut seen).is_err());
+        assert!(validate_snapshot_item(&tip, &mut has_tip, &mut seen).is_ok());
+        assert!(validate_snapshot_item(&tip, &mut has_tip, &mut seen).is_err());
+        assert!(validate_snapshot_item(&txid, &mut has_tip, &mut seen).is_ok());
+        assert!(validate_snapshot_item(&txid, &mut has_tip, &mut seen).is_err());
+        assert!(
+            validate_snapshot_item(
+                &snapshot_wire::SnapshotItem::default(),
+                &mut has_tip,
+                &mut seen
+            )
+            .is_err()
+        );
+        assert!(
+            validate_snapshot_item(
+                &snapshot_wire::SnapshotItem {
+                    body: Some(Body::Txid(vec![1; 31])),
+                },
+                &mut has_tip,
+                &mut seen
+            )
+            .is_err()
+        );
     }
 }

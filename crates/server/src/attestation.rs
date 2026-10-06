@@ -37,7 +37,8 @@ use zrpc_protocol::{
     PublicAttestationResponse, SafeError, parse_attestation_request, parse_request,
 };
 use zrpc_wallet_read::{
-    ReadMethod, backend::ZebraReadOnly, wire::compact_tx_streamer_server::CompactTxStreamerServer,
+    ReadMethod, backend::ZebraReadOnly, snapshot_wire::snapshot_read_server::SnapshotReadServer,
+    wire::compact_tx_streamer_server::CompactTxStreamerServer,
 };
 
 fn unavailable() -> SafeError {
@@ -272,10 +273,11 @@ impl AttestationService {
     /// the native verified transport and exact release are ready.
     pub fn with_wallet_backend(mut self, backend: ZebraReadOnly) -> Result<Self, SafeError> {
         let shared = Arc::get_mut(&mut self.shared).ok_or_else(unavailable)?;
-        if shared.payment.is_none() || shared.wallet_backend.is_some() {
+        if shared.payment.is_none() || shared.wallet_backend.is_some() || shared.node.is_none() {
             return Err(unavailable());
         }
-        shared.wallet_backend = Some(backend);
+        let snapshot_source = shared.node.as_ref().ok_or_else(unavailable)?.clone();
+        shared.wallet_backend = Some(backend.with_snapshot_source(Arc::new(snapshot_source)));
         Ok(self)
     }
     // Only tests may inject a pre-negotiated stream. Production listener owns
@@ -653,8 +655,14 @@ async fn handle_wallet_rpc<Q: QuoteSource>(
     // Generated Tonic service dispatches only the allowlisted path selected
     // above. Its backing implementation validates typed requests and strips
     // backend metadata/errors; SendTransaction and Ping cannot reach Zebra.
-    let mut service = CompactTxStreamerServer::new(backend.clone());
-    match service.call(request).await {
+    let result = if request.uri().path() == ReadMethod::GetMempoolSnapshot.path() {
+        let mut service = SnapshotReadServer::new(backend.clone());
+        service.call(request).await
+    } else {
+        let mut service = CompactTxStreamerServer::new(backend.clone());
+        service.call(request).await
+    };
+    match result {
         Ok(response) => response,
         Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE),
     }
