@@ -209,7 +209,7 @@ mod tests {
         testing::{
             AddressType, CacheInsertionResult, TestCache,
             orchard::OrchardPoolTester,
-            pool::{ShieldedPoolTester, dsl::TestDsl},
+            pool::{ShieldedPoolTester, dsl::TestDsl, send_single_step_proposed_transfer},
             sapling::SaplingPoolTester,
         },
         wallet::ConfirmationsPolicy,
@@ -453,5 +453,17 @@ mod tests {
             scenario.get_spendable_balance(account, ConfirmationsPolicy::MIN),
             Zatoshis::const_from_u64(140_000)
         );
+    }
+
+    #[test]
+    fn synthetic_sapling_change_memo_survives_reference_cache() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        send_single_step_proposed_transfer::<SaplingPoolTester>(TestDbFactory::default(), cache);
+    }
+
+    #[test]
+    fn synthetic_orchard_change_memo_survives_reference_cache() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        send_single_step_proposed_transfer::<OrchardPoolTester>(TestDbFactory::default(), cache);
     }
 }
