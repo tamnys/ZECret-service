@@ -151,7 +151,7 @@ fn matches_scanned_anchor(block: &CompactBlock, height: BlockHeight, hash: &Bloc
     block.height == u64::from(u32::from(height)) && block.hash.as_slice() == hash.0
 }
 
-fn open_history_stage(stage_dir: &Path) -> Result<File, std::io::Error> {
+pub(crate) fn open_history_stage(stage_dir: &Path) -> Result<File, std::io::Error> {
     OpenOptions::new()
         .read(true)
         .write(true)
