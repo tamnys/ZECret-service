@@ -18,7 +18,7 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
 };
 use zrpc_protocol::{ErrorCode, SafeError};
-use zrpc_wallet_read::{WalletReadRequest, snapshot_wire, wire};
+use zrpc_wallet_read::{NodeReadContext, WalletReadRequest, snapshot_wire, wire};
 
 type Client = wire::compact_tx_streamer_client::CompactTxStreamerClient<RetainedH2>;
 type SnapshotClient = snapshot_wire::snapshot_read_client::SnapshotReadClient<RetainedH2>;
@@ -228,7 +228,7 @@ impl PhalaTrustedWalletSession {
         self,
         request: F,
         prepare: P,
-    ) -> Result<(WalletReadResult, R), SafeError>
+    ) -> Result<(WalletReadResult, Option<NodeReadContext>, R), SafeError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<WalletReadRequest, SafeError>>,
@@ -253,7 +253,7 @@ impl PhalaTrustedWalletSession {
         self,
         request: WalletReadRequest,
         prepare: P,
-    ) -> Result<(WalletReadResult, R), SafeError>
+    ) -> Result<(WalletReadResult, Option<NodeReadContext>, R), SafeError>
     where
         P: FnOnce() -> Result<(H, R, C), SafeError>,
         H: AsRef<[u8]>,
@@ -280,7 +280,7 @@ impl PhalaTrustedWalletSession {
         )
         .await
         .map_err(|_| expired())??;
-        Ok((result, receipt))
+        Ok((result.0, result.1, receipt))
     }
 
     async fn execute(
@@ -288,7 +288,7 @@ impl PhalaTrustedWalletSession {
         client: &mut Client,
         request: WalletReadRequest,
         authorization: &MetadataValue<Ascii>,
-    ) -> Result<WalletReadResult, SafeError> {
+    ) -> Result<(WalletReadResult, Option<NodeReadContext>), SafeError> {
         let mut snapshot_client = if matches!(&request, WalletReadRequest::MempoolSnapshot(_)) {
             Some(self.snapshot_client()?)
         } else {
@@ -296,13 +296,16 @@ impl PhalaTrustedWalletSession {
         };
         let deadline = self.0.deadline;
         let session = self.0.session;
+        let context;
         macro_rules! unary {
             ($method:ident, $value:ident, $variant:ident) => {{
                 let response = client
                     .$method(with_authorization($value, authorization))
                     .await
-                    .map_err(status_error)?
-                    .into_inner();
+                    .map_err(status_error)?;
+                context =
+                    NodeReadContext::read_metadata(response.metadata()).map_err(status_error)?;
+                let response = response.into_inner();
                 check_live(&session, deadline)?;
                 WalletReadResult::$variant(response)
             }};
@@ -312,8 +315,10 @@ impl PhalaTrustedWalletSession {
                 let response = client
                     .$method(with_authorization($value, authorization))
                     .await
-                    .map_err(status_error)?
-                    .into_inner();
+                    .map_err(status_error)?;
+                context =
+                    NodeReadContext::read_metadata(response.metadata()).map_err(status_error)?;
+                let response = response.into_inner();
                 check_live(&session, deadline)?;
                 WalletReadResult::$variant(WalletReadStream {
                     inner: response,
@@ -336,8 +341,10 @@ impl PhalaTrustedWalletSession {
                 let response = client
                     .get_transaction(with_authorization(value, authorization))
                     .await
-                    .map_err(transaction_status_error)?
-                    .into_inner();
+                    .map_err(transaction_status_error)?;
+                context =
+                    NodeReadContext::read_metadata(response.metadata()).map_err(status_error)?;
+                let response = response.into_inner();
                 check_live(&session, deadline)?;
                 WalletReadResult::Transaction(response)
             }
@@ -355,8 +362,10 @@ impl PhalaTrustedWalletSession {
                 let response = client
                     .get_taddress_balance_stream(with_authorization(address_stream, authorization))
                     .await
-                    .map_err(status_error)?
-                    .into_inner();
+                    .map_err(status_error)?;
+                context =
+                    NodeReadContext::read_metadata(response.metadata()).map_err(status_error)?;
+                let response = response.into_inner();
                 check_live(&session, deadline)?;
                 WalletReadResult::TaddressBalanceStream(response)
             }
@@ -370,8 +379,10 @@ impl PhalaTrustedWalletSession {
                     .ok_or_else(unavailable)?
                     .get_mempool_snapshot(with_authorization(value, authorization))
                     .await
-                    .map_err(status_error)?
-                    .into_inner();
+                    .map_err(status_error)?;
+                context =
+                    NodeReadContext::read_metadata(response.metadata()).map_err(status_error)?;
+                let response = response.into_inner();
                 check_live(&session, deadline)?;
                 WalletReadResult::MempoolSnapshot(WalletReadStream {
                     inner: response,
@@ -394,7 +405,7 @@ impl PhalaTrustedWalletSession {
             }
             WalletReadRequest::LightdInfo(value) => unary!(get_lightd_info, value, LightdInfo),
         };
-        Ok(result)
+        Ok((result, context))
     }
 }
 
@@ -503,6 +514,14 @@ mod tests {
                         response
                             .headers_mut()
                             .insert("grpc-status", header::HeaderValue::from_static("0"));
+                        let mut metadata = tonic::metadata::MetadataMap::new();
+                        NodeReadContext {
+                            height: 41,
+                            hash: [8; 32],
+                        }
+                        .write_metadata(&mut metadata)
+                        .unwrap();
+                        response.headers_mut().extend(metadata.into_headers());
                         Ok::<_, Infallible>(response)
                     }
                 });
@@ -541,6 +560,13 @@ mod tests {
         };
         assert_eq!(block.height, 42);
         assert_eq!(block.hash, vec![7; 32]);
+        assert_eq!(
+            response.1,
+            Some(NodeReadContext {
+                height: 41,
+                hash: [8; 32]
+            })
+        );
         assert_eq!(wallet_calls.load(Ordering::SeqCst), 1);
         tokio::time::timeout(Duration::from_secs(1), peer)
             .await

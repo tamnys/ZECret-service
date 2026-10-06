@@ -13,6 +13,8 @@ pub mod local_status_wire {
 }
 
 pub mod backend;
+mod context;
+pub use context::NodeReadContext;
 mod operation;
 pub use operation::WalletReadRequest;
 mod validation;

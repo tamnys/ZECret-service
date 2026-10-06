@@ -9,7 +9,7 @@ use futures_util::stream;
 use prost::Message;
 use std::{error::Error, net::SocketAddr, path::PathBuf};
 use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
-use zrpc_wallet_read::wire;
+use zrpc_wallet_read::{NodeReadContext, wire};
 use zrpc_wallet_sdk::bridge::LocalWalletAdapter;
 
 fn selected(height: u64) -> wire::BlockId {
@@ -24,6 +24,90 @@ fn range(start: u64, end: u64) -> wire::BlockRange {
         start: Some(selected(start)),
         end: Some(selected(end)),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires a context-capable live approved testnet bridge and three free tickets"]
+async fn verified_bridge_preserves_context_on_unary_and_empty_streams() -> Result<(), Box<dyn Error>>
+{
+    let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
+    let capability = PathBuf::from(std::env::var("ZRPC_LIVE_WALLET_CAPABILITY_DIR")?);
+    let mut adapter = LocalWalletAdapter::connect(bind, &capability).await?;
+    let info = adapter.client().get_lightd_info(wire::Empty {}).await?;
+    let context = NodeReadContext::read_metadata(info.metadata())?
+        .ok_or("approved image omitted node context")?;
+    assert!(context.height > 0);
+    let balance = adapter
+        .client()
+        .get_taddress_balance(wire::AddressList {
+            addresses: vec![PREVIEW_TESTNET_ADDRESS.to_owned()],
+        })
+        .await?;
+    assert!(NodeReadContext::read_metadata(balance.metadata())?.is_some());
+    assert!(balance.get_ref().value_zat >= 0);
+    let history = adapter
+        .client()
+        .get_taddress_transactions(wire::TransparentAddressBlockFilter {
+            address: PREVIEW_TESTNET_ADDRESS.to_owned(),
+            range: Some(range(481_680, 481_710)),
+        })
+        .await?;
+    assert!(NodeReadContext::read_metadata(history.metadata())?.is_some());
+    let mut history = history.into_inner();
+    assert!(history.message().await?.is_none());
+    eprintln!(
+        "node context preserved for info, balance and empty history; no atomic snapshot claimed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a live approved testnet bridge and four free admission tickets"]
+async fn verified_bridge_recovers_after_a_dropped_range_with_concurrent_readers()
+-> Result<(), Box<dyn Error>> {
+    let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
+    let capability = PathBuf::from(std::env::var("ZRPC_LIVE_WALLET_CAPABILITY_DIR")?);
+    let mut first = LocalWalletAdapter::connect(bind, &capability).await?;
+    let mut second = LocalWalletAdapter::connect(bind, &capability).await?;
+    // The bridge deliberately serializes upstream reads. Concurrent local
+    // callers must still receive separately verified, ticketed responses.
+    let (first_tip, second_tip) = tokio::try_join!(
+        first.client().get_latest_block(wire::ChainSpec {}),
+        second.client().get_latest_block(wire::ChainSpec {}),
+    )?;
+    let first_tip = first_tip.into_inner();
+    let second_tip = second_tip.into_inner();
+    assert_eq!(first_tip.hash.len(), 32);
+    assert_eq!(second_tip.hash.len(), 32);
+    eprintln!("concurrent local tip reads complete");
+
+    let fixture = wire::CompactBlock::decode(
+        include_bytes!("../../../tests/fixtures/zcash/testnet-compact-4465070.pb").as_slice(),
+    )?;
+    let end = first_tip.height.min(second_tip.height);
+    assert!(
+        end > fixture.height,
+        "node must pass the pinned NU7 fixture"
+    );
+    // Request the remaining observed chain, consume just its first validated
+    // block, then abandon the result. No partial-range success is reported.
+    let mut blocks = first
+        .client()
+        .get_block_range(range(fixture.height, end))
+        .await?
+        .into_inner();
+    assert_eq!(blocks.message().await?.as_ref(), Some(&fixture));
+    drop(blocks);
+
+    let next = second
+        .client()
+        .get_latest_block(wire::ChainSpec {})
+        .await?
+        .into_inner();
+    assert_eq!(next.hash.len(), 32);
+    assert!(next.height >= fixture.height);
+    eprintln!("partial range dropped; subsequent verified tip read complete");
+    Ok(())
 }
 
 #[tokio::test]

@@ -332,17 +332,13 @@ async fn http2_quote_uses_same_tls_exporter_and_does_not_enable_http1_rpc() {
     let evidence = zrpc_protocol::parse_attestation_response(&evidence).unwrap();
     assert_eq!(hex::decode(evidence.report_data).unwrap(), expected);
     assert_eq!(*calls.lock().unwrap(), vec![expected]);
-    let (status, _) = read(
-        client
-            .send_request(send(
-                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction",
-                vec![],
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    for prohibited in [
+        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction",
+        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping",
+    ] {
+        let (status, _) = read(client.send_request(send(prohibited, vec![])).await.unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
     let (status, _) = read(
         client
             .send_request(send("/attestation", nonce_body([30; 32])))
@@ -351,8 +347,19 @@ async fn http2_quote_uses_same_tls_exporter_and_does_not_enable_http1_rpc() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let (status, _) = read(client.send_request(wallet_request()).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK);
+    // Two HTTP/2 streams may arrive on the same attested TLS connection.
+    // Exactly one can claim its single wallet RPC, including when the
+    // admitted backend read fails. The other must be rejected.
+    let mut competing = client.clone();
+    let (first, second) = tokio::join!(
+        client.send_request(wallet_request()),
+        competing.send_request(wallet_request()),
+    );
+    let (first, second) = tokio::join!(read(first.unwrap()), read(second.unwrap()));
+    assert!(
+        (first.0 == StatusCode::OK && second.0 == StatusCode::FORBIDDEN)
+            || (second.0 == StatusCode::OK && first.0 == StatusCode::FORBIDDEN)
+    );
     let (status, _) = read(client.send_request(wallet_request()).await.unwrap()).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = read(client.send_request(snapshot_request()).await.unwrap()).await;

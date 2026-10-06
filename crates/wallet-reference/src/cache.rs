@@ -204,12 +204,15 @@ impl BlockCache for SqliteBlockCache {
 mod tests {
     use super::*;
     use zcash_client_backend::data_api::{
-        Account,
+        Account, AccountPurpose, WalletRead, WalletWrite,
         scanning::ScanPriority,
         testing::{
             AddressType, CacheInsertionResult, TestCache,
             orchard::OrchardPoolTester,
-            pool::{ShieldedPoolTester, dsl::TestDsl, send_single_step_proposed_transfer},
+            pool::{
+                InputTrust, ShieldedPoolTester, dsl::TestDsl, send_single_step_proposed_transfer,
+                wallet_recovery_computes_fees, zip_315_confirmations_test_steps,
+            },
             sapling::SaplingPoolTester,
         },
         wallet::ConfirmationsPolicy,
@@ -465,5 +468,137 @@ mod tests {
     fn synthetic_orchard_change_memo_survives_reference_cache() {
         let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
         send_single_step_proposed_transfer::<OrchardPoolTester>(TestDbFactory::default(), cache);
+    }
+
+    fn synthetic_view_only_restore_and_wallet_restart<T: ShieldedPoolTester>() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario =
+            TestDsl::with_sapling_birthday_account(TestDbFactory::file_backed(), cache)
+                .build::<T>();
+        let account = scenario.get_account();
+        let viewing_key = account.usk().to_unified_full_viewing_key();
+        let birthday = account.birthday().clone();
+        let network = *scenario.network();
+        let (first_height, _, _) =
+            scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(90_000));
+        let recipient = T::sk_default_address(&T::sk(&[0xf5; 32]));
+        let txid = scenario.spend_to(&recipient, Zatoshis::const_from_u64(30_000));
+        let (tip_height, _) = scenario.generate_next_block_including(txid);
+        scenario.scan_cached_blocks(tip_height, 1);
+        let expected = Zatoshis::const_from_u64(50_000);
+        assert_eq!(scenario.get_total_balance(account.id()), expected);
+        let tip_hash = scenario.wallet().get_block_hash(tip_height).unwrap();
+
+        // Reset closes the original wallet connection and retains ownership of
+        // its file. Reopen that committed database without recreating accounts.
+        let wallet_file = scenario.reset().expect("file-backed synthetic wallet");
+        let conn = Connection::open_with_flags(
+            wallet_file.path(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap();
+        rusqlite::vtab::array::load_module(&conn).unwrap();
+        let mut reopened = zcash_client_sqlite::WalletDb::from_connection(
+            conn,
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+        );
+        zcash_client_sqlite::wallet::init::init_wallet_db(&mut reopened, None).unwrap();
+        let summary = reopened
+            .get_wallet_summary(ConfirmationsPolicy::MIN)
+            .unwrap()
+            .unwrap();
+        assert_eq!(summary.fully_scanned_height(), tip_height);
+        assert_eq!(summary.account_balances()[&account.id()].total(), expected);
+        assert_eq!(reopened.get_block_hash(tip_height).unwrap(), tip_hash);
+        assert_eq!(
+            reopened.get_transaction(txid).unwrap().unwrap().txid(),
+            txid
+        );
+        drop(reopened);
+
+        // The reset database is fresh: import only the synthetic viewing key,
+        // then recover the receipt, spend and change from the reference cache.
+        assert!(scenario.wallet().get_account_ids().unwrap().is_empty());
+        scenario
+            .wallet_mut()
+            .import_account_ufvk(
+                "restored view-only",
+                &viewing_key,
+                &birthday,
+                AccountPurpose::ViewOnly,
+                None,
+            )
+            .unwrap();
+        let restored_accounts = scenario.wallet().get_account_ids().unwrap();
+        assert_eq!(restored_accounts.len(), 1);
+        scenario.scan_cached_blocks(first_height, 2);
+        assert_eq!(scenario.get_total_balance(restored_accounts[0]), expected);
+        assert_eq!(
+            scenario.wallet().get_block_hash(tip_height).unwrap(),
+            tip_hash
+        );
+    }
+
+    #[test]
+    fn synthetic_sapling_view_only_restore_and_wallet_restart() {
+        synthetic_view_only_restore_and_wallet_restart::<SaplingPoolTester>();
+    }
+
+    #[test]
+    fn synthetic_orchard_view_only_restore_and_wallet_restart() {
+        synthetic_view_only_restore_and_wallet_restart::<OrchardPoolTester>();
+    }
+
+    #[test]
+    fn synthetic_sapling_confirmation_policy_boundaries() {
+        for trust in [
+            InputTrust::Internal,
+            InputTrust::ExternalUntrusted,
+            InputTrust::ExternalTrusted,
+        ] {
+            let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+            zip_315_confirmations_test_steps::<SaplingPoolTester>(
+                TestDbFactory::default(),
+                cache,
+                trust,
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_orchard_confirmation_policy_boundaries() {
+        for trust in [
+            InputTrust::Internal,
+            InputTrust::ExternalUntrusted,
+            InputTrust::ExternalTrusted,
+        ] {
+            let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+            zip_315_confirmations_test_steps::<OrchardPoolTester>(
+                TestDbFactory::default(),
+                cache,
+                trust,
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_transparent_receipts_spending_and_fee_recovery() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        // The maintained fixture receives two 200,000-zat transparent outputs,
+        // checks the 400,000-zat balance, spends them, and restores the fee from
+        // full transactions after clearing the saved fee metadata.
+        wallet_recovery_computes_fees::<SaplingPoolTester, _>(
+            TestDbFactory::default(),
+            cache,
+            |db, txid| {
+                db.conn_mut().execute(
+                    "UPDATE transactions SET fee = NULL WHERE txid = ?1",
+                    params![txid.as_ref()],
+                )?;
+                Ok(())
+            },
+        );
     }
 }

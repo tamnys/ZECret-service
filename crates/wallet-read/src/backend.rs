@@ -3,9 +3,9 @@
 //! wrapper must still authorize each remote call before invoking it.
 
 use crate::{
-    RangeContinuity, ReadMethod, SubtreeContinuity, snapshot_wire, validate_client_stream_address,
-    validate_compact_block, validate_compact_tx, validate_nullifier_only_block,
-    validate_unary_request, wire,
+    NodeReadContext, RangeContinuity, ReadMethod, SubtreeContinuity, snapshot_wire,
+    validate_client_stream_address, validate_compact_block, validate_compact_tx,
+    validate_nullifier_only_block, validate_unary_request, wire,
 };
 use futures_util::{StreamExt, stream};
 use prost::Message;
@@ -41,6 +41,12 @@ fn sanitize(error: Status) -> Status {
 
 fn invalid_data() -> Status {
     Status::data_loss("Invalid testnet wallet data from the node.")
+}
+
+fn contextual_response<T>(value: T, context: NodeReadContext) -> Result<Response<T>, Status> {
+    let mut response = Response::new(value);
+    context.write_metadata(response.metadata_mut())?;
+    Ok(response)
 }
 
 fn check_block_id(id: &wire::BlockId) -> Result<(), Status> {
@@ -202,6 +208,17 @@ impl ZebraReadOnly {
         check_info(&info)?;
         Ok(client)
     }
+
+    async fn observe_tip(
+        client: &mut wire::compact_tx_streamer_client::CompactTxStreamerClient<Channel>,
+    ) -> Result<NodeReadContext, Status> {
+        let tip = client
+            .get_latest_block(wire::ChainSpec {})
+            .await
+            .map_err(sanitize)?
+            .into_inner();
+        NodeReadContext::from_block_id(&tip)
+    }
 }
 
 fn checked_blocks(
@@ -333,13 +350,14 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetTransaction, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let response = client
             .get_transaction(request)
             .await
             .map_err(sanitize)?
             .into_inner();
         check_raw_transaction(&response)?;
-        Ok(Response::new(response))
+        contextual_response(response, context)
     }
     async fn send_transaction(
         &self,
@@ -357,6 +375,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetTaddressTxids, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_taddress_txids(request)
             .await
@@ -367,7 +386,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             check_raw_transaction(&value)?;
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     type GetTaddressTransactionsStream = ReadStream<wire::RawTransaction>;
     async fn get_taddress_transactions(
@@ -380,6 +399,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             &request.encode_to_vec(),
         )?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_taddress_transactions(request)
             .await
@@ -390,7 +410,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             check_raw_transaction(&value)?;
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     async fn get_taddress_balance(
         &self,
@@ -399,13 +419,14 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetTaddressBalance, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let response = client
             .get_taddress_balance(request)
             .await
             .map_err(sanitize)?
             .into_inner();
         check_balance(&response)?;
-        Ok(Response::new(response))
+        contextual_response(response, context)
     }
 
     async fn get_taddress_balance_stream(
@@ -430,13 +451,14 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             ));
         }
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let response = client
             .get_taddress_balance_stream(stream::iter(addresses))
             .await
             .map_err(sanitize)?
             .into_inner();
         check_balance(&response)?;
-        Ok(Response::new(response))
+        contextual_response(response, context)
     }
 
     type GetMempoolTxStream = ReadStream<wire::CompactTx>;
@@ -447,6 +469,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetMempoolTx, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_mempool_tx(request)
             .await
@@ -457,7 +480,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             validate_compact_tx(&value)?;
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     type GetMempoolStreamStream = ReadStream<wire::RawTransaction>;
     async fn get_mempool_stream(
@@ -467,6 +490,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetMempoolStream, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_mempool_stream(request)
             .await
@@ -477,7 +501,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             check_raw_transaction(&value)?;
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     async fn get_tree_state(
         &self,
@@ -519,6 +543,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         validate_unary_request(ReadMethod::GetSubtreeRoots, &request.encode_to_vec())?;
         let mut continuity = SubtreeContinuity::new(request.start_index, request.max_entries);
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_subtree_roots(request)
             .await
@@ -529,7 +554,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             continuity.observe(&value)?;
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     async fn get_address_utxos(
         &self,
@@ -541,13 +566,14 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let start_height = request.start_height;
         let max_entries = request.max_entries;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let response = client
             .get_address_utxos(request)
             .await
             .map_err(sanitize)?
             .into_inner();
         check_utxos(&response, &addresses, start_height, max_entries)?;
-        Ok(Response::new(response))
+        contextual_response(response, context)
     }
     type GetAddressUtxosStreamStream = ReadStream<wire::GetAddressUtxosReply>;
     async fn get_address_utxos_stream(
@@ -560,6 +586,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let start_height = request.start_height;
         let max_entries = request.max_entries;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let input = client
             .get_address_utxos_stream(request)
             .await
@@ -580,7 +607,7 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
             }
             Ok(value)
         });
-        Ok(Response::new(Box::pin(output)))
+        contextual_response(Box::pin(output), context)
     }
     async fn get_lightd_info(
         &self,
@@ -589,13 +616,14 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
         let request = request.into_inner();
         validate_unary_request(ReadMethod::GetLightdInfo, &request.encode_to_vec())?;
         let mut client = self.client().await?;
+        let context = Self::observe_tip(&mut client).await?;
         let response = client
             .get_lightd_info(request)
             .await
             .map_err(sanitize)?
             .into_inner();
         check_info(&response)?;
-        Ok(Response::new(response))
+        contextual_response(response, context)
     }
     async fn ping(
         &self,
@@ -663,6 +691,167 @@ mod tests {
     use snapshot_wire::snapshot_read_server::SnapshotRead;
     use wire::compact_tx_streamer_server::CompactTxStreamer;
     use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
+
+    #[derive(Clone)]
+    struct ObservationNode {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        malformed_tip: bool,
+    }
+
+    struct ObservationCall<T> {
+        node: ObservationNode,
+        name: &'static str,
+        value: T,
+    }
+
+    impl<Q: Send + 'static, T: Clone + Send + 'static> tonic::server::UnaryService<Q>
+        for ObservationCall<T>
+    {
+        type Response = T;
+        type Future = tonic::codegen::BoxFuture<Response<T>, Status>;
+
+        fn call(&mut self, _: Request<Q>) -> Self::Future {
+            self.node.calls.lock().unwrap().push(self.name);
+            let mut response = Response::new(self.value.clone());
+            // Upstream metadata is not a wrapper-produced observation.
+            response
+                .metadata_mut()
+                .insert("x-zrpc-node-context", "atomic-snapshot".parse().unwrap());
+            Box::pin(async move { Ok(response) })
+        }
+    }
+
+    impl tonic::server::NamedService for ObservationNode {
+        const NAME: &'static str = "cash.z.wallet.sdk.rpc.CompactTxStreamer";
+    }
+
+    impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for ObservationNode {
+        type Response = tonic::codegen::http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = tonic::codegen::BoxFuture<Self::Response, Self::Error>;
+
+        fn poll_ready(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn call(
+            &mut self,
+            request: tonic::codegen::http::Request<tonic::body::Body>,
+        ) -> Self::Future {
+            let node = self.clone();
+            Box::pin(async move {
+                let response = match request.uri().path() {
+                    "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo" => {
+                        let call = ObservationCall {
+                            node,
+                            name: "info",
+                            value: wire::LightdInfo {
+                                chain_name: "test".into(),
+                                taddr_support: true,
+                                block_height: 42,
+                                ..Default::default()
+                            },
+                        };
+                        tonic::server::Grpc::new(tonic_prost::ProstCodec::<
+                            wire::LightdInfo,
+                            wire::Empty,
+                        >::default())
+                        .unary(call, request)
+                        .await
+                    }
+                    "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock" => {
+                        let value = wire::BlockId {
+                            height: 42,
+                            hash: vec![7; if node.malformed_tip { 31 } else { 32 }],
+                        };
+                        let call = ObservationCall {
+                            node,
+                            name: "tip",
+                            value,
+                        };
+                        tonic::server::Grpc::new(tonic_prost::ProstCodec::<
+                            wire::BlockId,
+                            wire::ChainSpec,
+                        >::default())
+                        .unary(call, request)
+                        .await
+                    }
+                    "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressBalance" => {
+                        let call = ObservationCall {
+                            node,
+                            name: "balance",
+                            value: wire::Balance { value_zat: 0 },
+                        };
+                        tonic::server::Grpc::new(tonic_prost::ProstCodec::<
+                            wire::Balance,
+                            wire::AddressList,
+                        >::default())
+                        .unary(call, request)
+                        .await
+                    }
+                    _ => tonic::codegen::http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(tonic::body::Body::empty())
+                        .unwrap(),
+                };
+                Ok(response)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn balance_observes_tip_before_read_and_rejects_invalid_tip_before_private_dispatch() {
+        for malformed_tip in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let service = ObservationNode {
+                calls: calls.clone(),
+                malformed_tip,
+            };
+            let incoming = stream::unfold(listener, |listener| async move {
+                let connection = listener.accept().await.map(|(stream, _)| stream);
+                Some((connection, listener))
+            });
+            let server = tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(service)
+                    .serve_with_incoming(Box::pin(incoming))
+                    .await
+                    .unwrap();
+            });
+            let backend = ZebraReadOnly::new(address).unwrap();
+            let mut request = Request::new(wire::AddressList {
+                addresses: vec![PREVIEW_TESTNET_ADDRESS.to_owned()],
+            });
+            request
+                .metadata_mut()
+                .insert("x-zrpc-node-height", "99".parse().unwrap());
+            let result = backend.get_taddress_balance(request).await;
+            if malformed_tip {
+                assert_eq!(result.unwrap_err().code(), tonic::Code::DataLoss);
+                assert_eq!(*calls.lock().unwrap(), vec!["info", "tip"]);
+            } else {
+                let response = result.unwrap();
+                assert_eq!(response.get_ref().value_zat, 0);
+                assert_eq!(
+                    NodeReadContext::read_metadata(response.metadata()).unwrap(),
+                    Some(NodeReadContext {
+                        height: 42,
+                        hash: [7; 32]
+                    })
+                );
+                assert_eq!(*calls.lock().unwrap(), vec!["info", "tip", "balance"]);
+            }
+            server.abort();
+            let _ = server.await;
+        }
+    }
 
     #[test]
     fn selected_block_must_match_height_or_hash() {
