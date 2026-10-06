@@ -27,6 +27,55 @@ fn range(start: u64, end: u64) -> wire::BlockRange {
 }
 
 #[tokio::test]
+#[ignore = "requires a live approved testnet bridge and four free admission tickets"]
+async fn verified_bridge_recovers_after_a_dropped_range_with_concurrent_readers()
+-> Result<(), Box<dyn Error>> {
+    let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
+    let capability = PathBuf::from(std::env::var("ZRPC_LIVE_WALLET_CAPABILITY_DIR")?);
+    let mut first = LocalWalletAdapter::connect(bind, &capability).await?;
+    let mut second = LocalWalletAdapter::connect(bind, &capability).await?;
+    // The bridge deliberately serializes upstream reads. Concurrent local
+    // callers must still receive separately verified, ticketed responses.
+    let (first_tip, second_tip) = tokio::try_join!(
+        first.client().get_latest_block(wire::ChainSpec {}),
+        second.client().get_latest_block(wire::ChainSpec {}),
+    )?;
+    let first_tip = first_tip.into_inner();
+    let second_tip = second_tip.into_inner();
+    assert_eq!(first_tip.hash.len(), 32);
+    assert_eq!(second_tip.hash.len(), 32);
+    eprintln!("concurrent local tip reads complete");
+
+    let fixture = wire::CompactBlock::decode(
+        include_bytes!("../../../tests/fixtures/zcash/testnet-compact-4465070.pb").as_slice(),
+    )?;
+    let end = first_tip.height.min(second_tip.height);
+    assert!(
+        end > fixture.height,
+        "node must pass the pinned NU7 fixture"
+    );
+    // Request the remaining observed chain, consume just its first validated
+    // block, then abandon the result. No partial-range success is reported.
+    let mut blocks = first
+        .client()
+        .get_block_range(range(fixture.height, end))
+        .await?
+        .into_inner();
+    assert_eq!(blocks.message().await?.as_ref(), Some(&fixture));
+    drop(blocks);
+
+    let next = second
+        .client()
+        .get_latest_block(wire::ChainSpec {})
+        .await?
+        .into_inner();
+    assert_eq!(next.hash.len(), 32);
+    assert!(next.height >= fixture.height);
+    eprintln!("partial range dropped; subsequent verified tip read complete");
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires a live approved testnet bridge with tickets for every read family"]
 async fn verified_bridge_serves_all_pinned_wallet_read_methods() -> Result<(), Box<dyn Error>> {
     let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
