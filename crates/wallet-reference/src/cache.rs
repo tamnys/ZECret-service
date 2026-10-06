@@ -204,9 +204,12 @@ impl BlockCache for SqliteBlockCache {
 mod tests {
     use super::*;
     use zcash_client_backend::data_api::{
+        Account,
         scanning::ScanPriority,
         testing::{
-            CacheInsertionResult, TestCache, orchard::OrchardPoolTester, pool::dsl::TestDsl,
+            AddressType, CacheInsertionResult, TestCache,
+            orchard::OrchardPoolTester,
+            pool::{ShieldedPoolTester, dsl::TestDsl},
             sapling::SaplingPoolTester,
         },
         wallet::ConfirmationsPolicy,
@@ -385,6 +388,70 @@ mod tests {
         assert_eq!(
             balance.orchard_balance().total(),
             Zatoshis::const_from_u64(60_000)
+        );
+    }
+
+    #[test]
+    fn synthetic_sapling_spend_changes_balance_after_mining() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario = TestDsl::with_sapling_birthday_account(TestDbFactory::default(), cache)
+            .build::<SaplingPoolTester>();
+        let account = scenario.get_account().id();
+        scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(90_000));
+
+        let recipient_key = SaplingPoolTester::sk(&[0xf5; 32]);
+        let recipient = SaplingPoolTester::sk_default_address(&recipient_key);
+        let txid = scenario.spend_to(&recipient, Zatoshis::const_from_u64(30_000));
+        assert_eq!(
+            scenario.get_spendable_balance(account, ConfirmationsPolicy::MIN),
+            Zatoshis::ZERO
+        );
+
+        let (height, _) = scenario.generate_next_block_including(txid);
+        scenario.scan_cached_blocks(height, 1);
+        assert_eq!(
+            scenario
+                .get_account_balance(ConfirmationsPolicy::MIN)
+                .unwrap()
+                .sapling_balance()
+                .total(),
+            Zatoshis::const_from_u64(50_000)
+        );
+    }
+
+    #[test]
+    fn synthetic_orchard_reorg_replaces_orphaned_receipt() {
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario = TestDsl::with_sapling_birthday_account(TestDbFactory::default(), cache)
+            .build::<OrchardPoolTester>();
+        let account = scenario.get_account().id();
+        let (fork_height, _, _) =
+            scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(60_000));
+        scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(70_000));
+        assert_eq!(
+            scenario
+                .get_account_balance(ConfirmationsPolicy::MIN)
+                .unwrap()
+                .orchard_balance()
+                .total(),
+            Zatoshis::const_from_u64(130_000)
+        );
+
+        scenario.truncate_to_height(fork_height);
+        assert_eq!(
+            scenario.get_spendable_balance(account, ConfirmationsPolicy::MIN),
+            Zatoshis::const_from_u64(60_000)
+        );
+        let fvk = OrchardPoolTester::test_account_fvk(&scenario);
+        let (height, _, _) = scenario.generate_next_block(
+            &fvk,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(80_000),
+        );
+        scenario.scan_cached_blocks(height, 1);
+        assert_eq!(
+            scenario.get_spendable_balance(account, ConfirmationsPolicy::MIN),
+            Zatoshis::const_from_u64(140_000)
         );
     }
 }
