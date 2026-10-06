@@ -81,7 +81,7 @@ fn read_viewing_key(path: PathBuf) -> Result<UnifiedFullViewingKey, Box<dyn Erro
 // Public chain-data smoke test for an attested bridge. Each invocation makes
 // exactly one wallet RPC and therefore consumes one free admission ticket.
 async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
-    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|block HEIGHT|range START_HEIGHT END_HEIGHT|history TESTNET_ADDRESS START_HEIGHT END_HEIGHT}";
+    let usage = "usage: zrpc-wallet-reference probe LOOPBACK_HOST:PORT CAPABILITY_DIR {info|tip|snapshot|block HEIGHT|range START_HEIGHT END_HEIGHT|history TESTNET_ADDRESS START_HEIGHT END_HEIGHT}";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
     let capability_dir = PathBuf::from(args.next().ok_or(usage)?);
     let method = args.next().ok_or(usage)?;
@@ -108,7 +108,7 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             }
             Some((start, end))
         }
-        Some("info" | "tip") => None,
+        Some("info" | "tip" | "snapshot") => None,
         _ => return Err(usage.into()),
     };
     if args.next().is_some() {
@@ -127,6 +127,38 @@ async fn probe(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
         Some("tip") => {
             let tip = client.get_latest_block(ChainSpec {}).await?.into_inner();
             println!("node_height={} hash_bytes={}", tip.height, tip.hash.len());
+        }
+        Some("snapshot") => {
+            // A one-RPC diagnostic of the local node's finite mempool snapshot.
+            // It does not assert that any wallet is synchronized to this tip.
+            let mut stream = adapter
+                .snapshot_client()
+                .get_mempool_snapshot(snapshot_wire::SnapshotRequest {})
+                .await?
+                .into_inner();
+            let mut tip = None;
+            let mut count = 0_u64;
+            while let Some(item) = stream.message().await? {
+                match item.body {
+                    Some(snapshot_wire::snapshot_item::Body::Tip(anchor)) if tip.is_none() => {
+                        if anchor.hash.len() != 32 {
+                            return Err("mempool snapshot tip hash is malformed".into());
+                        }
+                        tip = Some(anchor.height);
+                    }
+                    Some(snapshot_wire::snapshot_item::Body::Txid(txid)) if tip.is_some() => {
+                        if txid.len() != 32 {
+                            return Err("mempool snapshot transaction ID is malformed".into());
+                        }
+                        count = count.checked_add(1).ok_or("mempool count overflow")?;
+                    }
+                    _ => return Err("mempool snapshot item order is malformed".into()),
+                }
+            }
+            let height = tip.ok_or("mempool snapshot omitted its chain tip")?;
+            println!(
+                "node_snapshot_complete=true node_height={height} mempool_transactions={count}"
+            );
         }
         Some("block") => {
             let height = heights.ok_or(usage)?.0;
