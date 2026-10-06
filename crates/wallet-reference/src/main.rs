@@ -447,7 +447,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     // freshness or provider-independent TEE isolation.
     if let Some(summary) = wallet.get_wallet_summary(ConfirmationsPolicy::default())? {
         println!(
-            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_snapshot_checks={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
+            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_snapshot_checks={} pending_snapshot_deferred={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
             u32::from(summary.fully_scanned_height()),
             u32::from(summary.chain_tip_height()),
             summary.is_synced(),
@@ -456,6 +456,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             enhanced.status_checks,
             enhanced.mined_transparent_history_reads,
             enhanced.pending_snapshot_checks,
+            enhanced.pending_snapshot_deferred,
             enhanced.pending_unverified_checks,
             enhanced.unsupported_history_requests,
             enhanced.remaining_requests,
@@ -513,11 +514,27 @@ async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
         &mut wallet,
         wallet_path.parent().ok_or("wallet path has no parent")?,
     )
-    .await?;
+    .await?
+    .require_complete()?;
     println!(
         "mempool_transactions_processed={staged_count} status=observed_at_node_snapshot_rescan_to_reconcile"
     );
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingSnapshotOutcome {
+    Complete(u64),
+    TipMoved,
+}
+
+impl PendingSnapshotOutcome {
+    fn require_complete(self) -> Result<u64, &'static str> {
+        match self {
+            Self::Complete(count) => Ok(count),
+            Self::TipMoved => Err("wallet scan tip differs from the node; scan again first"),
+        }
+    }
 }
 
 pub(crate) async fn process_pending_snapshot(
@@ -525,7 +542,7 @@ pub(crate) async fn process_pending_snapshot(
     client: &mut MaintainedScannerClient,
     wallet: &mut LocalWallet,
     stage_dir: &Path,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<PendingSnapshotOutcome, Box<dyn Error>> {
     let local_tip = wallet
         .chain_height()?
         .ok_or("wallet chain tip unavailable")?;
@@ -534,7 +551,7 @@ pub(crate) async fn process_pending_snapshot(
         .get_block_hash(local_tip)?
         .ok_or("wallet scan tip hash unavailable")?;
     if !same_scanned_tip(local_tip, local_hash, &node_tip) {
-        return Err("wallet scan tip differs from the node; scan again first".into());
+        return Ok(PendingSnapshotOutcome::TipMoved);
     }
     let next_height = BlockHeight::from_u32(
         u32::from(local_tip)
@@ -565,7 +582,7 @@ pub(crate) async fn process_pending_snapshot(
                         hash: tip.hash,
                     },
                 ) {
-                    return Err("mempool snapshot tip differs from the scanned wallet".into());
+                    return Ok(PendingSnapshotOutcome::TipMoved);
                 }
                 saw_tip = true;
             }
@@ -610,7 +627,7 @@ pub(crate) async fn process_pending_snapshot(
     }
     let after = client.get_latest_block(ChainSpec {}).await?.into_inner();
     if !same_scanned_tip(local_tip, local_hash, &after) {
-        return Err("node tip changed during mempool read; scan again first".into());
+        return Ok(PendingSnapshotOutcome::TipMoved);
     }
     stage.seek(SeekFrom::Start(0))?;
     wallet.transactionally(|wdb| -> Result<(), Box<dyn Error>> {
@@ -646,7 +663,7 @@ pub(crate) async fn process_pending_snapshot(
     })?;
     // Complete only for the node's local mempool at the snapshot instant. It
     // does not assert that the network mempool stayed unchanged afterward.
-    Ok(staged_count)
+    Ok(PendingSnapshotOutcome::Complete(staged_count))
 }
 
 #[cfg(test)]
