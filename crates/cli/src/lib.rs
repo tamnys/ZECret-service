@@ -496,8 +496,18 @@ fn wallet_bridge_report(snapshot: WalletBridgeStatus) -> serde_json::Value {
                 "passed_for_last_completed_read"
             } else {"not_established"},
             "last_ticket_spent":snapshot.last_ticket_spent,
-            "node_sync":"not_reported_by_bridge",
-            "wallet_scan":"not_reported_by_bridge"
+            "node_sync":snapshot.last_node_observation.map(|node| json!({
+                "source":"last_completed_verified_node_read",
+                "node_reported_height":node.height,
+                "node_estimated_height":node.estimated_height,
+                "global_freshness":"not_established"
+            })),
+            "wallet_scan":snapshot.last_wallet_scan.map(|scan| json!({
+                "source":"last_local_reader_report",
+                "fully_scanned_height":scan.fully_scanned_height,
+                "wallet_tip_height":scan.wallet_tip_height,
+                "compact_scan_complete":scan.compact_scan_complete
+            }))
         }
     })
 }
@@ -554,6 +564,7 @@ mod tests {
             active: false,
             last_outcome: BridgeReadOutcome::Completed,
             last_ticket_spent: Some(true),
+            ..WalletBridgeStatus::default()
         });
         assert_eq!(
             completed["wallet_bridge"]["last_read_verification"],
@@ -570,12 +581,55 @@ mod tests {
             active: false,
             last_outcome: BridgeReadOutcome::Unavailable,
             last_ticket_spent: None,
+            ..WalletBridgeStatus::default()
         });
         assert_eq!(
             failed["wallet_bridge"]["last_read_verification"],
             "not_established"
         );
         assert!(failed["wallet_bridge"]["last_ticket_spent"].is_null());
+    }
+
+    #[test]
+    fn wallet_status_keeps_node_and_local_scan_progress_distinct() {
+        let report = wallet_bridge_report(WalletBridgeStatus {
+            last_node_observation: Some(zrpc_wallet_sdk::NodeObservation {
+                height: 120,
+                estimated_height: Some(125),
+            }),
+            last_wallet_scan: Some(zrpc_wallet_sdk::bridge::WalletScanProgress {
+                fully_scanned_height: 118,
+                wallet_tip_height: 120,
+                compact_scan_complete: false,
+            }),
+            ..WalletBridgeStatus::default()
+        });
+        assert_eq!(
+            report["wallet_bridge"]["node_sync"]["node_reported_height"],
+            120
+        );
+        assert_eq!(
+            report["wallet_bridge"]["node_sync"]["node_estimated_height"],
+            125
+        );
+        assert_eq!(
+            report["wallet_bridge"]["node_sync"]["global_freshness"],
+            "not_established"
+        );
+        assert_eq!(
+            report["wallet_bridge"]["wallet_scan"]["fully_scanned_height"],
+            118
+        );
+        assert_eq!(
+            report["wallet_bridge"]["wallet_scan"]["wallet_tip_height"],
+            120
+        );
+        assert_eq!(
+            report["wallet_bridge"]["wallet_scan"]["compact_scan_complete"],
+            false
+        );
+        assert_eq!(report["wallet_bridge"]["connection"], "no_active_session");
+        assert!(report["private_accepted"].is_null());
     }
 
     fn session() -> LocalSession {

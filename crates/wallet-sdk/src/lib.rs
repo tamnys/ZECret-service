@@ -60,6 +60,15 @@ pub struct WalletReadCompletion {
     /// This describes only completion of one backend RPC, not an atomic chain
     /// snapshot or global node freshness.
     pub ticket_spent: bool,
+    /// Last node height from this completed read, if it was a tip or info read.
+    /// This is the node's own report, never a global freshness appraisal.
+    pub node_observation: Option<NodeObservation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeObservation {
+    pub height: u32,
+    pub estimated_height: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -256,7 +265,7 @@ impl WalletReader {
         let range = *range.lock().map_err(|_| invalid_chain())?;
         let selected_block = *selected_block.lock().map_err(|_| invalid_chain())?;
         let subtree = *subtree.lock().map_err(|_| invalid_chain())?;
-        let delivered_items = drain_result(
+        let (delivered_items, node_observation) = drain_result(
             result,
             range,
             selected_block,
@@ -272,6 +281,7 @@ impl WalletReader {
             method,
             delivered_items,
             ticket_spent: true,
+            node_observation,
         })
     }
 }
@@ -283,12 +293,13 @@ async fn drain_result<S, SFut>(
     subtree: Option<(u32, u32)>,
     prior_block_hash: Option<[u8; 32]>,
     sink: &mut S,
-) -> Result<u64, SafeError>
+) -> Result<(u64, Option<NodeObservation>), SafeError>
 where
     S: FnMut(WalletReadItem) -> SFut,
     SFut: Future<Output = Result<(), SafeError>>,
 {
     let mut delivered = 0_u64;
+    let mut node_observation = None;
     macro_rules! emit {
         ($variant:ident, $item:expr) => {{
             sink(WalletReadItem::$variant($item)).await?;
@@ -303,7 +314,13 @@ where
         }};
     }
     match result {
-        WalletReadResult::LatestBlock(item) => emit!(LatestBlock, item),
+        WalletReadResult::LatestBlock(item) => {
+            node_observation = Some(NodeObservation {
+                height: u32::try_from(item.height).map_err(|_| invalid_chain())?,
+                estimated_height: None,
+            });
+            emit!(LatestBlock, item);
+        }
         WalletReadResult::Block(item) => {
             zrpc_wallet_read::validate_compact_block(&item).map_err(|_| invalid_chain())?;
             if !selected_block.is_some_and(|selected| selected_block_matches(selected, &item)) {
@@ -382,14 +399,73 @@ where
         WalletReadResult::AddressUtxosStream(mut value) => {
             stream!(value, AddressUtxosStream)
         }
-        WalletReadResult::LightdInfo(item) => emit!(LightdInfo, item),
+        WalletReadResult::LightdInfo(item) => {
+            node_observation = Some(NodeObservation {
+                height: u32::try_from(item.block_height).map_err(|_| invalid_chain())?,
+                estimated_height: u32::try_from(item.estimated_height)
+                    .ok()
+                    .filter(|height| *height != 0),
+            });
+            emit!(LightdInfo, item);
+        }
     }
-    Ok(delivered)
+    Ok((delivered, node_observation))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn node_progress_only_comes_from_completed_tip_or_info_reads() {
+        let mut sink = |_item| std::future::ready(Ok(()));
+        let (_, tip) = drain_result(
+            WalletReadResult::LatestBlock(wire::BlockId {
+                height: 42,
+                hash: vec![7; 32],
+            }),
+            None,
+            None,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tip.unwrap().height, 42);
+        assert_eq!(tip.unwrap().estimated_height, None);
+
+        let (_, info) = drain_result(
+            WalletReadResult::LightdInfo(wire::LightdInfo {
+                block_height: 43,
+                estimated_height: 47,
+                ..Default::default()
+            }),
+            None,
+            None,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(info.unwrap().estimated_height, Some(47));
+        assert!(
+            drain_result(
+                WalletReadResult::LatestBlock(wire::BlockId {
+                    height: u64::from(u32::MAX) + 1,
+                    hash: vec![7; 32],
+                }),
+                None,
+                None,
+                None,
+                None,
+                &mut sink,
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[test]
     fn range_context_is_only_taken_from_typed_compact_block_reads() {

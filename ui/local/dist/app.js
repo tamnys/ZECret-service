@@ -53,9 +53,25 @@ function show(report, elapsed) {
             report.browser_wallet_rpc_sent !== false || !bridge) {
             throw new Error('Local wallet status is inconsistent. Restart the bridge.');
         }
+        const node = bridge.node_sync;
+        const scan = bridge.wallet_scan;
+        if (node && (node.source !== 'last_completed_verified_node_read' ||
+            node.global_freshness !== 'not_established' ||
+            !Number.isSafeInteger(node.node_reported_height) || node.node_reported_height < 0 ||
+            (node.node_estimated_height !== null &&
+                (!Number.isSafeInteger(node.node_estimated_height) || node.node_estimated_height < 0)))) {
+            throw new Error('Local node status is inconsistent. Restart the bridge.');
+        }
+        if (scan && (scan.source !== 'last_local_reader_report' ||
+            !Number.isSafeInteger(scan.fully_scanned_height) ||
+            !Number.isSafeInteger(scan.wallet_tip_height) ||
+            scan.fully_scanned_height < 0 || scan.fully_scanned_height > scan.wallet_tip_height ||
+            typeof scan.compact_scan_complete !== 'boolean')) {
+            throw new Error('Local scan status is inconsistent. Restart the bridge.');
+        }
         byId('block-context').hidden = true;
         byId('sent').textContent = 'No';
-        byId('chain').textContent = 'Not reported';
+        byId('chain').textContent = node ? node.node_reported_height.toLocaleString() : 'Not observed';
         byId('result-label').textContent = bridge.connection === 'verifying_or_reading'
             ? 'READ IN PROGRESS' : bridge.last_read === 'upstream_read_completed'
             ? 'LAST UPSTREAM READ COMPLETE' : bridge.last_read === 'unavailable_or_interrupted'
@@ -65,8 +81,12 @@ function show(report, elapsed) {
             ['Last upstream read', bridge.last_read.replaceAll('_', ' ')],
             ['Last read verification', bridge.last_read_verification.replaceAll('_', ' ')],
             ['Last read ticket', bridge.last_ticket_spent === true ? 'spent' : 'unknown'],
-            ['Wallet scan progress', 'not reported by bridge'],
-            ['Node synchronization', 'not reported by bridge']
+            ['Wallet scan (last local report)', scan
+                    ? `${scan.fully_scanned_height.toLocaleString()} of ${scan.wallet_tip_height.toLocaleString()} · compact scan ${scan.compact_scan_complete ? 'complete at reported tip' : 'incomplete'}`
+                    : 'no local scan report'],
+            ['Node (last verified read)', node
+                    ? `${node.node_reported_height.toLocaleString()}${node.node_estimated_height === null ? '' : ` · node estimate ${node.node_estimated_height.toLocaleString()}`} · global freshness unverified`
+                    : 'no node observation']
         ];
         const evidence = byId('evidence');
         evidence.replaceChildren();
@@ -231,12 +251,12 @@ async function start() {
             }
             const intro = document.querySelector('.intro');
             if (intro)
-                intro.textContent = 'See local bridge activity without sending a wallet request from the browser. Wallet synchronization runs in native software on your device.';
+                intro.textContent = 'See bridge activity and height-only progress from native wallet software. The browser cannot send wallet requests or read keys, balances, or memos.';
             const evidenceTag = document.querySelector('.layout .panel:not(.controls) .section-top .tag');
             if (evidenceTag)
                 evidenceTag.textContent = 'STATUS ONLY';
             byId('mode-label').textContent = 'WALLET BRIDGE · LOCAL STATUS';
-            byId('mode-description').textContent = 'The wallet bridge uses the Phala-trusting profile. Each wallet RPC still needs Tor, an approved release, a fresh TDX quote and the live TLS key binding. This page shows local bridge activity only; it cannot send wallet requests or read wallet state.';
+            byId('mode-description').textContent = 'The wallet bridge uses the Phala-trusting profile. Each wallet RPC still needs Tor, an approved release, a fresh TDX quote and the live TLS key binding. This page shows historical local progress only; it cannot send wallet requests.';
             const heading = document.querySelector('.controls h2');
             if (heading)
                 heading.textContent = 'Observe the bridge';
@@ -248,9 +268,9 @@ async function start() {
             byId('scenario').hidden = true;
             run.firstChild.textContent = 'Refresh local status ';
             byId('sent').previousElementSibling.textContent = 'Wallet RPCs from browser';
-            byId('chain').previousElementSibling.textContent = 'Node synchronization';
+            byId('chain').previousElementSibling.textContent = 'Last node-reported height';
             byId('release-note').textContent = 'A completed upstream read is historical. It does not prove a current verified connection or wallet synchronization.';
-            byId('gate-note').textContent = 'The authenticated local gRPC bridge is for native wallet software. A past successful read cannot authorize a new request. Wallet scanning progress and wallet state remain on the wallet device.';
+            byId('gate-note').textContent = 'The authenticated local gRPC bridge is for native wallet software. A past successful read cannot authorize a new request. Scan heights are reported by the local reader; neither they nor the node estimate prove global chain freshness.';
             const asideTitle = document.querySelector('.aside strong');
             if (asideTitle)
                 asideTitle.textContent = 'Local wallet status only.';

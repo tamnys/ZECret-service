@@ -31,7 +31,9 @@ use zcash_primitives::{block::BlockHash, transaction::Transaction};
 use zcash_protocol::consensus::{BlockHeight, Network};
 use zeroize::Zeroize;
 use zrpc_payments::PrivateDirectory;
-use zrpc_wallet_sdk::bridge::{LocalWalletAdapter, MaintainedScannerClient, snapshot_wire};
+use zrpc_wallet_sdk::bridge::{
+    LocalWalletAdapter, MaintainedScannerClient, WalletScanProgress, snapshot_wire,
+};
 
 mod cache;
 mod enhance;
@@ -370,6 +372,23 @@ fn scan_progress(
     Ok((wallet_height, cache_height))
 }
 
+async fn report_committed_scan(
+    adapter: &LocalWalletAdapter,
+    wallet: &LocalWallet,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(summary) = wallet.get_wallet_summary(ConfirmationsPolicy::default())? else {
+        return Ok(false);
+    };
+    let progress = WalletScanProgress {
+        fully_scanned_height: u32::from(summary.fully_scanned_height()),
+        wallet_tip_height: u32::from(summary.chain_tip_height()),
+        compact_scan_complete: summary.is_synced(),
+    };
+    // The local dashboard is informational. A status failure cannot undo a
+    // committed wallet scan or turn it into an accepted pending result.
+    Ok(adapter.report_scan_progress(progress).await.is_ok())
+}
+
 async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     let usage = "usage: zrpc-wallet-reference scan LOOPBACK_HOST:PORT CAPABILITY_DIR WALLET_DB CACHE_DB BATCH_SIZE";
     let bind = parse_bind(args.next().ok_or(usage)?)?;
@@ -389,6 +408,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     let mut client = adapter.maintained_scanner_client();
     let cache = SqliteBlockCache::open(&cache_path)?;
     let mut prior_progress = scan_progress(&wallet, &cache)?;
+    let _ = report_committed_scan(&adapter, &wallet).await?;
     loop {
         match sync::run(
             &mut client,
@@ -416,6 +436,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
                     && current != prior_progress
                 {
                     prior_progress = current;
+                    let _ = report_committed_scan(&adapter, &wallet).await?;
                     eprintln!(
                         "resuming verified wallet scan from wallet_height={} cache_height={}",
                         current.0, current.1
@@ -446,8 +467,9 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     // maintained wallet scanner's local progress, not a claim of global tip
     // freshness or provider-independent TEE isolation.
     if let Some(summary) = wallet.get_wallet_summary(ConfirmationsPolicy::default())? {
+        let local_status_reported = report_committed_scan(&adapter, &wallet).await?;
         println!(
-            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_snapshot_checks={} pending_snapshot_deferred={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
+            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_snapshot_checks={} pending_snapshot_deferred={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={} local_status_reported={}",
             u32::from(summary.fully_scanned_height()),
             u32::from(summary.chain_tip_height()),
             summary.is_synced(),
@@ -460,6 +482,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             enhanced.pending_unverified_checks,
             enhanced.unsupported_history_requests,
             enhanced.remaining_requests,
+            local_status_reported,
         );
         for (account, balance) in summary.account_balances() {
             println!(

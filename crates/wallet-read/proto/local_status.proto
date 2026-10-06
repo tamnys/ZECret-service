@@ -1,0 +1,16 @@
+// Local-only status reports. This service is never exposed by the TEE wrapper
+// and does not forward requests or credentials to the node.
+syntax = "proto3";
+package zrpc.wallet.local.v1;
+
+message ScanProgress {
+    uint64 fully_scanned_height = 1;
+    uint64 wallet_tip_height = 2;
+    bool compact_scan_complete = 3;
+}
+
+message ScanProgressAck {}
+
+service LocalStatus {
+    rpc ReportScanProgress(ScanProgress) returns (ScanProgressAck) {}
+}
