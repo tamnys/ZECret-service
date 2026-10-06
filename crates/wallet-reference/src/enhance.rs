@@ -42,6 +42,9 @@ pub struct EnhancementReport {
     pub pending_unverified_checks: u64,
     /// Address checks completed against the finite local-node mempool snapshot.
     pub pending_snapshot_checks: u64,
+    /// A moving node tip prevented a complete pending snapshot; no pending
+    /// address check was marked complete.
+    pub pending_snapshot_deferred: bool,
     /// The request filter or range could not be handled by this reader.
     pub unsupported_history_requests: u64,
     pub remaining_requests: usize,
@@ -302,9 +305,17 @@ pub async fn process_snapshot(
             if matches!(history.tx_status_filter(), TransactionStatusFilter::All)
                 && matches!(history.output_status_filter(), OutputStatusFilter::Unspent))
     });
-    if needs_pending_snapshot {
-        crate::process_pending_snapshot(adapter, client, wallet, stage_dir).await?;
-    }
+    let pending_snapshot_complete = if needs_pending_snapshot {
+        match crate::process_pending_snapshot(adapter, client, wallet, stage_dir).await? {
+            crate::PendingSnapshotOutcome::Complete(_) => true,
+            crate::PendingSnapshotOutcome::TipMoved => {
+                report.pending_snapshot_deferred = true;
+                false
+            }
+        }
+    } else {
+        false
+    };
     for request in requests {
         let (txid, enhance) = match request {
             TransactionDataRequest::GetStatus(txid) => (txid, false),
@@ -315,7 +326,7 @@ pub async fn process_snapshot(
                     wallet,
                     history,
                     stage_dir,
-                    needs_pending_snapshot,
+                    pending_snapshot_complete,
                 )
                 .await?
                 {
@@ -324,7 +335,7 @@ pub async fn process_snapshot(
                     }
                     Some(MinedHistoryKind::PendingUnresolved) => {
                         report.mined_transparent_history_reads += 1;
-                        if needs_pending_snapshot {
+                        if pending_snapshot_complete {
                             report.pending_snapshot_checks += 1;
                         } else {
                             report.pending_unverified_checks += 1;
