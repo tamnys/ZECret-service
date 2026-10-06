@@ -214,7 +214,7 @@ mod tests {
     use zcash_client_sqlite::testing::db::TestDbFactory;
     use zcash_protocol::{TxId, value::Zatoshis};
 
-    struct TestInsertion(Vec<TxId>);
+    pub struct TestInsertion(Vec<TxId>);
 
     impl CacheInsertionResult for TestInsertion {
         fn txids(&self) -> &[TxId] {

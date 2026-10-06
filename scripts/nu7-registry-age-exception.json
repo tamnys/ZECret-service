@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "5ff7393aa6a4c952779afa9196ccff433ec14ba72c3603191c7b149f175bfd08",
+  "cargo_lock_sha256": "3f689ea01c1d388563ee9597ed3eda1702013dae95d169a838dbcc07752fc23b",
   "packages": [
     {
       "checksum": "5045d51a6a5e85e0a18d909eedd270c4d82ad634fee57ba707692fb3b1add5a7",
@@ -25,6 +25,11 @@
       "checksum": "c3b0c166f7f34e02988f84a7bed22be9707b1569acc6aeb3afaf34152d0e0400",
       "name": "incrementalmerkletree",
       "version": "0.9.0"
+    },
+    {
+      "checksum": "e9109f51a90d7533a645acef89934a07893e2516dd7d7c250459643c7150d10f",
+      "name": "incrementalmerkletree-testing",
+      "version": "0.4.0"
     },
     {
       "checksum": "4ae7ceb7b5387bd76cf3c0712f57708795c925cecf097036cedb60b5c3706e8f",
@@ -79,6 +84,11 @@
     {
       "checksum": "9e2f5bf9a1e5a16612cbbab5a112bcec36a3623d8585da0187dcb58a247bc078",
       "name": "zcash_primitives",
+      "version": "0.31.0-pre.0"
+    },
+    {
+      "checksum": "d9bc8791093fe97f895ff7779645aa0bf71fde708640fe51e7fc05b6d9e68bb4",
+      "name": "zcash_proofs",
       "version": "0.31.0-pre.0"
     },
     {

@@ -26,7 +26,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 PUBTIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 NU7_EXCEPTION_SCOPE = "nu7-testnet-wallet-evaluation-only"
 NU7_EXCEPTION_PATH = Path(__file__).with_name("nu7-registry-age-exception.json")
-NU7_EXCEPTION_SHA256 = "e188e488b2c236c1e04dc377ec271f012ee0a840fecc9a8c95adddb1b1b84731"
+NU7_EXCEPTION_SHA256 = "276fd2e1c2e4d7e9ecfb6525f93bc04465d6a347b208e2388f474a0e2473410a"
 
 
 class Refusal(Exception):
