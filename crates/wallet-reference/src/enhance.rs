@@ -158,11 +158,27 @@ fn matches_scanned_anchor(block: &CompactBlock, height: BlockHeight, hash: &Bloc
 }
 
 pub(crate) fn open_history_stage(stage_dir: &Path) -> Result<File, std::io::Error> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_TMPFILE)
-        .open(stage_dir)
+    anonymous_stage_or_memfd(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_TMPFILE)
+            .open(stage_dir),
+    )
+}
+
+fn anonymous_stage_or_memfd(stage: Result<File, std::io::Error>) -> Result<File, std::io::Error> {
+    match stage {
+        Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => {
+            // Some private wallet filesystems do not support O_TMPFILE. Keep
+            // staging anonymous on the local device: this memory-backed file
+            // grows with the staged data, and allocation errors propagate.
+            rustix::fs::memfd_create(c"zrpc-wallet-stage", rustix::fs::MemfdFlags::CLOEXEC)
+                .map(File::from)
+                .map_err(Into::into)
+        }
+        result => result,
+    }
 }
 
 async fn process_mined_transparent_history(
@@ -217,8 +233,8 @@ async fn process_mined_transparent_history(
         .into_inner();
     let mut previous_height = None;
     // Keep the untrusted stream out of the wallet database until the complete
-    // range and its chain anchor have been checked. O_TMPFILE creates an
-    // unnamed file on the wallet's own filesystem; failure is fail-closed.
+    // range and its chain anchor have been checked. Staging has no directory
+    // entry, including on filesystems that need the anonymous memfd fallback.
     let mut stage = open_history_stage(stage_dir)?;
     let mut staged_count = 0_u64;
     while let Some(raw) = stream.message().await? {
@@ -405,6 +421,30 @@ mod tests {
         file.read_to_string(&mut contents).unwrap();
         assert_eq!(contents, "synthetic transaction");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn unsupported_anonymous_filesystem_uses_read_write_seek_memfd() {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut file =
+            anonymous_stage_or_memfd(Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP)))
+                .unwrap();
+        file.write_all(b"synthetic transaction").unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "synthetic transaction");
+        assert_eq!(file.metadata().unwrap().nlink(), 0);
+    }
+
+    #[test]
+    fn anonymous_stage_preserves_permission_and_path_errors() {
+        for code in [libc::EACCES, libc::ENOENT] {
+            let error =
+                anonymous_stage_or_memfd(Err(std::io::Error::from_raw_os_error(code))).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+        }
     }
 
     #[test]

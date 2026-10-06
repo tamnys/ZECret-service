@@ -17,7 +17,7 @@ use std::{
 use subtle::ConstantTimeEq;
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, mpsc, oneshot},
 };
 use tonic::{
     Request, Response, Status,
@@ -405,14 +405,21 @@ impl WalletBridge {
             )
             .await
             .map_err(status)?;
-        let response = selected
+        let mut response = selected
             .map(Response::new)
             .ok_or_else(|| status(wrong_result()))?;
+        if let Some(context) = completion.node_read_context {
+            context.write_metadata(response.metadata_mut())?;
+        }
         activity.complete(completion).map_err(status)?;
         Ok(response)
     }
 
-    fn streamed<T, F>(&self, request: WalletReadRequest, select: F) -> Response<ReadStream<T>>
+    async fn streamed<T, F>(
+        &self,
+        request: WalletReadRequest,
+        select: F,
+    ) -> Result<Response<ReadStream<T>>, Status>
     where
         T: Send + 'static,
         F: Fn(WalletReadItem) -> Result<T, SafeError> + Send + Sync + 'static,
@@ -420,6 +427,7 @@ impl WalletBridge {
         // A single in-flight item is the minimum channel capacity that still
         // lets an async producer wait for a slow local wallet consumer.
         let (sender, receiver) = mpsc::channel(1);
+        let (context_sender, context_receiver) = oneshot::channel();
         let reader = self.reader.clone();
         let status_snapshot = self.status.clone();
         let task = tokio::spawn(async move {
@@ -431,7 +439,7 @@ impl WalletBridge {
             };
             let mut activity = ActivityGuard::begin(status_snapshot).map_err(status)?;
             let closed = sender.clone();
-            let read = reader.read_from_request(
+            let read = reader.read_from_request_with_context(
                 || ready(Ok(request)),
                 |item| {
                     let value = select(item);
@@ -442,6 +450,7 @@ impl WalletBridge {
                     }
                 },
                 None,
+                |context| context_sender.send(context).map_err(|_| unavailable()),
             );
             let result = tokio::select! {
                 result = read => result.map_err(status),
@@ -454,6 +463,18 @@ impl WalletBridge {
                 result.map(|_| ())
             }
         });
+        // Send initial metadata only after the remote response has passed the
+        // same native verification and metadata validation as SDK reads. This
+        // handshake also preserves context on successful empty streams.
+        let context = match context_receiver.await {
+            Ok(context) => context,
+            Err(_) => {
+                return Err(match task.await {
+                    Ok(Err(error)) => error,
+                    _ => Status::unavailable("Wallet read interrupted before response headers."),
+                });
+            }
+        };
         let output = stream::unfold(
             (receiver, Some(task)),
             |(mut receiver, mut task)| async move {
@@ -473,7 +494,11 @@ impl WalletBridge {
                 }
             },
         );
-        Response::new(Box::pin(output))
+        let mut response: Response<ReadStream<T>> = Response::new(Box::pin(output));
+        if let Some(context) = context {
+            context.write_metadata(response.metadata_mut())?;
+        }
+        Ok(response)
     }
 }
 
@@ -523,26 +548,28 @@ impl CompactTxStreamer for WalletBridge {
         &self,
         request: Request<wire::BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::BlockRange(request.into_inner()),
             |item| match item {
                 WalletReadItem::BlockRange(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     type GetBlockRangeNullifiersStream = ReadStream<wire::CompactBlock>;
     async fn get_block_range_nullifiers(
         &self,
         request: Request<wire::BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeNullifiersStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::BlockRangeNullifiers(request.into_inner()),
             |item| match item {
                 WalletReadItem::BlockRangeNullifiers(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     async fn get_transaction(
         &self,
@@ -570,26 +597,28 @@ impl CompactTxStreamer for WalletBridge {
         &self,
         request: Request<wire::TransparentAddressBlockFilter>,
     ) -> Result<Response<Self::GetTaddressTxidsStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::TaddressTxids(request.into_inner()),
             |item| match item {
                 WalletReadItem::TaddressTxids(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     type GetTaddressTransactionsStream = ReadStream<wire::RawTransaction>;
     async fn get_taddress_transactions(
         &self,
         request: Request<wire::TransparentAddressBlockFilter>,
     ) -> Result<Response<Self::GetTaddressTransactionsStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::TaddressTransactions(request.into_inner()),
             |item| match item {
                 WalletReadItem::TaddressTransactions(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     async fn get_taddress_balance(
         &self,
@@ -636,26 +665,28 @@ impl CompactTxStreamer for WalletBridge {
         &self,
         request: Request<wire::Exclude>,
     ) -> Result<Response<Self::GetMempoolTxStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::MempoolTx(request.into_inner()),
             |item| match item {
                 WalletReadItem::MempoolTx(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     type GetMempoolStreamStream = ReadStream<wire::RawTransaction>;
     async fn get_mempool_stream(
         &self,
         request: Request<wire::Empty>,
     ) -> Result<Response<Self::GetMempoolStreamStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::MempoolStream(request.into_inner()),
             |item| match item {
                 WalletReadItem::MempoolStream(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     async fn get_tree_state(
         &self,
@@ -688,13 +719,14 @@ impl CompactTxStreamer for WalletBridge {
         &self,
         request: Request<wire::GetSubtreeRootsArg>,
     ) -> Result<Response<Self::GetSubtreeRootsStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::SubtreeRoots(request.into_inner()),
             |item| match item {
                 WalletReadItem::SubtreeRoots(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     async fn get_address_utxos(
         &self,
@@ -714,13 +746,14 @@ impl CompactTxStreamer for WalletBridge {
         &self,
         request: Request<wire::GetAddressUtxosArg>,
     ) -> Result<Response<Self::GetAddressUtxosStreamStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::AddressUtxosStream(request.into_inner()),
             |item| match item {
                 WalletReadItem::AddressUtxosStream(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
     async fn get_lightd_info(
         &self,
@@ -785,13 +818,14 @@ impl SnapshotRead for WalletBridge {
         &self,
         request: Request<snapshot_wire::SnapshotRequest>,
     ) -> Result<Response<Self::GetMempoolSnapshotStream>, Status> {
-        Ok(self.streamed(
+        self.streamed(
             WalletReadRequest::MempoolSnapshot(request.into_inner()),
             |item| match item {
                 WalletReadItem::MempoolSnapshot(value) => Ok(value),
                 _ => Err(wrong_result()),
             },
-        ))
+        )
+        .await
     }
 }
 
@@ -835,6 +869,7 @@ mod tests {
                         height: 43,
                         estimated_height: None,
                     }),
+                    node_read_context: None,
                 })
                 .unwrap();
         }

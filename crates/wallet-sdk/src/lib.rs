@@ -10,6 +10,7 @@ use zrpc_payments::{ClientStore, IssuerPublic};
 use zrpc_protocol::{ErrorCode, SafeError};
 use zrpc_transport::WalletReadResult;
 use zrpc_verifier::PhalaTrustedPolicy;
+pub use zrpc_wallet_read::NodeReadContext;
 use zrpc_wallet_read::{
     RangeContinuity, ReadMethod, SubtreeContinuity, WalletReadRequest, snapshot_wire, wire,
 };
@@ -63,6 +64,9 @@ pub struct WalletReadCompletion {
     /// Last node height from this completed read, if it was a tip or info read.
     /// This is the node's own report, never a global freshness appraisal.
     pub node_observation: Option<NodeObservation>,
+    /// Node tip observed before this backend read, if the approved image
+    /// implements the extension. Never an atomic response snapshot.
+    pub node_read_context: Option<NodeReadContext>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,7 +204,7 @@ impl WalletReader {
     pub async fn read_from_request<F, Fut, S, SFut>(
         &mut self,
         request: F,
-        mut sink: S,
+        sink: S,
         prior_block_hash: Option<[u8; 32]>,
     ) -> Result<WalletReadCompletion, SafeError>
     where
@@ -208,6 +212,27 @@ impl WalletReader {
         Fut: Future<Output = Result<WalletReadRequest, SafeError>>,
         S: FnMut(WalletReadItem) -> SFut,
         SFut: Future<Output = Result<(), SafeError>>,
+    {
+        self.read_from_request_with_context(request, sink, prior_block_hash, |_| Ok(()))
+            .await
+    }
+
+    /// Observe validated response context before any result item is delivered.
+    /// This also runs for empty streams. Older images report `None`; no
+    /// observation is synthesized from an unrelated read.
+    pub async fn read_from_request_with_context<F, Fut, S, SFut, O>(
+        &mut self,
+        request: F,
+        mut sink: S,
+        prior_block_hash: Option<[u8; 32]>,
+        observe: O,
+    ) -> Result<WalletReadCompletion, SafeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<WalletReadRequest, SafeError>>,
+        S: FnMut(WalletReadItem) -> SFut,
+        SFut: Future<Output = Result<(), SafeError>>,
+        O: FnOnce(Option<NodeReadContext>) -> Result<(), SafeError>,
     {
         let session = connect_phala_trusted_wallet(
             &self.endpoint,
@@ -220,7 +245,7 @@ impl WalletReader {
         let range = Mutex::new(None);
         let selected_block = Mutex::new(None);
         let subtree = Mutex::new(None);
-        let (result, marker) = session
+        let (result, node_read_context, marker) = session
             .read_from_request_async(
                 || async {
                     let request = request().await?;
@@ -258,6 +283,7 @@ impl WalletReader {
                 },
             )
             .await?;
+        observe(node_read_context)?;
         let method = method
             .lock()
             .map_err(|_| invalid_chain())?
@@ -282,6 +308,7 @@ impl WalletReader {
             delivered_items,
             ticket_spent: true,
             node_observation,
+            node_read_context,
         })
     }
 }

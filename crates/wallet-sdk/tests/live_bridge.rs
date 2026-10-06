@@ -9,7 +9,7 @@ use futures_util::stream;
 use prost::Message;
 use std::{error::Error, net::SocketAddr, path::PathBuf};
 use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
-use zrpc_wallet_read::wire;
+use zrpc_wallet_read::{NodeReadContext, wire};
 use zrpc_wallet_sdk::bridge::LocalWalletAdapter;
 
 fn selected(height: u64) -> wire::BlockId {
@@ -24,6 +24,41 @@ fn range(start: u64, end: u64) -> wire::BlockRange {
         start: Some(selected(start)),
         end: Some(selected(end)),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires a context-capable live approved testnet bridge and three free tickets"]
+async fn verified_bridge_preserves_context_on_unary_and_empty_streams() -> Result<(), Box<dyn Error>>
+{
+    let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
+    let capability = PathBuf::from(std::env::var("ZRPC_LIVE_WALLET_CAPABILITY_DIR")?);
+    let mut adapter = LocalWalletAdapter::connect(bind, &capability).await?;
+    let info = adapter.client().get_lightd_info(wire::Empty {}).await?;
+    let context = NodeReadContext::read_metadata(info.metadata())?
+        .ok_or("approved image omitted node context")?;
+    assert!(context.height > 0);
+    let balance = adapter
+        .client()
+        .get_taddress_balance(wire::AddressList {
+            addresses: vec![PREVIEW_TESTNET_ADDRESS.to_owned()],
+        })
+        .await?;
+    assert!(NodeReadContext::read_metadata(balance.metadata())?.is_some());
+    assert!(balance.get_ref().value_zat >= 0);
+    let history = adapter
+        .client()
+        .get_taddress_transactions(wire::TransparentAddressBlockFilter {
+            address: PREVIEW_TESTNET_ADDRESS.to_owned(),
+            range: Some(range(481_680, 481_710)),
+        })
+        .await?;
+    assert!(NodeReadContext::read_metadata(history.metadata())?.is_some());
+    let mut history = history.into_inner();
+    assert!(history.message().await?.is_none());
+    eprintln!(
+        "node context preserved for info, balance and empty history; no atomic snapshot claimed"
+    );
+    Ok(())
 }
 
 #[tokio::test]
