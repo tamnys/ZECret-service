@@ -42,12 +42,25 @@ pub struct EnhancementReport {
     pub pending_unverified_checks: u64,
     /// Address checks completed against the finite local-node mempool snapshot.
     pub pending_snapshot_checks: u64,
-    /// A moving node tip prevented a complete pending snapshot; no pending
-    /// address check was marked complete.
+    /// An incompatible anchor or interpretation prevented a complete pending
+    /// observation; no pending address check was marked complete.
     pub pending_snapshot_deferred: bool,
+    /// The finite mempool observation and the distinct scanned wallet height.
+    pub pending_observation: Option<crate::PendingObservation>,
     /// The request filter or range could not be handled by this reader.
     pub unsupported_history_requests: u64,
     pub remaining_requests: usize,
+    /// Open-ended All + Unspent refreshes recur even after a successful check.
+    pub recurring_address_refresh_requests: usize,
+    /// Remaining enhancement, status, and bounded history work.
+    pub remaining_nonrecurring_requests: usize,
+}
+
+fn is_recurring_address_refresh(request: &TransactionDataRequest) -> bool {
+    matches!(request, TransactionDataRequest::TransactionsInvolvingAddress(history)
+        if history.block_range_end().is_none()
+            && matches!(history.tx_status_filter(), TransactionStatusFilter::All)
+            && matches!(history.output_status_filter(), OutputStatusFilter::Unspent))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,7 +71,7 @@ enum ChainTxState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MinedHistoryKind {
+pub(super) enum MinedHistoryKind {
     Complete,
     PendingUnresolved,
 }
@@ -181,7 +194,7 @@ fn anonymous_stage_or_memfd(stage: Result<File, std::io::Error>) -> Result<File,
     }
 }
 
-async fn process_mined_transparent_history(
+pub(super) async fn process_mined_transparent_history(
     client: &mut MaintainedScannerClient,
     wallet: &mut LocalWallet,
     request: TransactionsInvolvingAddress,
@@ -299,13 +312,70 @@ async fn process_mined_transparent_history(
         }
         // The mined range is complete only after its stream and chain anchor
         // are checked. All + Unspent also requires the complete local-node
-        // mempool ID snapshot and full transactions at the same scanned tip.
+        // mempool ID snapshot and full transactions. Its explicitly reported
+        // node anchor may be newer; notify only the blocks inspected through
+        // `end`, never the unscanned interval above the wallet anchor. This is
+        // not an atomic balance or a claim that the current node tip was read.
         if kind == MinedHistoryKind::Complete || pending_snapshot_complete {
             wdb.notify_address_checked(request, end)?;
         }
         Ok(())
     })?;
     Ok(Some(kind))
+}
+
+// Keep fixture reconciliation on the same checked transaction path as the
+// ordinary enhancement pass; callers cannot pass an address-history request.
+pub(super) async fn process_transaction_request(
+    client: &mut MaintainedScannerClient,
+    wallet: &mut LocalWallet,
+    request: TransactionDataRequest,
+) -> Result<bool, Box<dyn Error>> {
+    let (txid, enhance) = match request {
+        TransactionDataRequest::GetStatus(txid) => (txid, false),
+        TransactionDataRequest::Enhancement(txid) => (txid, true),
+        TransactionDataRequest::TransactionsInvolvingAddress(_) => {
+            return Err("transaction reconciliation requires a transaction request".into());
+        }
+    };
+    let raw = match client
+        .get_transaction(TxFilter {
+            block: None,
+            index: 0,
+            hash: txid.as_ref().to_vec(),
+        })
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(error) if error.code() == tonic::Code::NotFound => {
+            wallet.set_transaction_status(txid, TransactionStatus::TxidNotRecognized)?;
+            return Ok(false);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let state = ChainTxState::from_wire_height(raw.height)?;
+    let parse_height = if let Some(height) = state.mined_height() {
+        height
+    } else {
+        let tip = wallet
+            .chain_height()?
+            .ok_or("wallet chain tip unavailable")?;
+        let next = u32::from(tip)
+            .checked_add(1)
+            .ok_or("wallet chain height overflow")?;
+        BlockHeight::from_u32(next)
+    };
+    let transaction = decode_checked_transaction(&raw, txid, parse_height)?;
+    if enhance {
+        decrypt_and_store_transaction(
+            &Network::TestNetwork,
+            wallet,
+            &transaction,
+            state.mined_height(),
+        )?;
+    }
+    wallet.set_transaction_status(txid, state.wallet_status())?;
+    Ok(enhance)
 }
 
 pub async fn process_snapshot(
@@ -323,8 +393,11 @@ pub async fn process_snapshot(
     });
     let pending_snapshot_complete = if needs_pending_snapshot {
         match crate::process_pending_snapshot(adapter, client, wallet, stage_dir).await? {
-            crate::PendingSnapshotOutcome::Complete(_) => true,
-            crate::PendingSnapshotOutcome::TipMoved => {
+            crate::PendingSnapshotOutcome::Complete(observation) => {
+                report.pending_observation = Some(observation);
+                true
+            }
+            crate::PendingSnapshotOutcome::RescanRequired => {
                 report.pending_snapshot_deferred = true;
                 false
             }
@@ -362,54 +435,71 @@ pub async fn process_snapshot(
                 continue;
             }
         };
-        let raw = match client
-            .get_transaction(TxFilter {
-                block: None,
-                index: 0,
-                hash: txid.as_ref().to_vec(),
-            })
-            .await
-        {
-            Ok(response) => response.into_inner(),
-            Err(error) if error.code() == tonic::Code::NotFound => {
-                wallet.set_transaction_status(txid, TransactionStatus::TxidNotRecognized)?;
-                report.status_checks += 1;
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let state = ChainTxState::from_wire_height(raw.height)?;
-        let parse_height = if let Some(height) = state.mined_height() {
-            height
+        let request = if enhance {
+            TransactionDataRequest::Enhancement(txid)
         } else {
-            let tip = wallet
-                .chain_height()?
-                .ok_or("wallet chain tip unavailable")?;
-            let next = u32::from(tip)
-                .checked_add(1)
-                .ok_or("wallet chain height overflow")?;
-            BlockHeight::from_u32(next)
+            TransactionDataRequest::GetStatus(txid)
         };
-        let transaction = decode_checked_transaction(&raw, txid, parse_height)?;
-        if enhance {
-            decrypt_and_store_transaction(
-                &Network::TestNetwork,
-                wallet,
-                &transaction,
-                state.mined_height(),
-            )?;
-            report.enhanced += 1;
-        }
-        wallet.set_transaction_status(txid, state.wallet_status())?;
+        report.enhanced += u64::from(process_transaction_request(client, wallet, request).await?);
         report.status_checks += 1;
     }
-    report.remaining_requests = wallet.transaction_data_requests()?.len();
+    let remaining = wallet.transaction_data_requests()?;
+    report.remaining_requests = remaining.len();
+    report.recurring_address_refresh_requests = remaining
+        .iter()
+        .filter(|request| is_recurring_address_refresh(request))
+        .count();
+    report.remaining_nonrecurring_requests =
+        remaining.len() - report.recurring_address_refresh_requests;
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_empty_ephemeral_refresh_remains_recurring_not_backlog() {
+        use crate::cache::SqliteBlockCache;
+        use zcash_client_backend::data_api::testing::{
+            pool::dsl::TestDsl, sapling::SaplingPoolTester,
+        };
+        use zcash_client_sqlite::testing::db::TestDbFactory;
+        use zcash_protocol::value::Zatoshis;
+        let cache = SqliteBlockCache::open(Path::new(":memory:")).unwrap();
+        let mut scenario = TestDsl::with_sapling_birthday_account(TestDbFactory::default(), cache)
+            .build::<SaplingPoolTester>();
+        let (height, _, _) =
+            scenario.add_a_single_note_checking_balance(Zatoshis::const_from_u64(60_000));
+        let initial = scenario.wallet().transaction_data_requests().unwrap();
+        let initial_nonrecurring = initial
+            .iter()
+            .filter(|request| !is_recurring_address_refresh(request))
+            .count();
+        let recurring: Vec<_> = initial
+            .into_iter()
+            .filter(is_recurring_address_refresh)
+            .collect();
+        assert!(!recurring.is_empty());
+        for request in &recurring {
+            let TransactionDataRequest::TransactionsInvolvingAddress(history) = request else {
+                unreachable!()
+            };
+            scenario
+                .wallet_mut()
+                .notify_address_checked(history.clone(), height)
+                .unwrap();
+        }
+        let remaining = scenario.wallet().transaction_data_requests().unwrap();
+        let refreshed_count = remaining
+            .iter()
+            .filter(|request| is_recurring_address_refresh(request))
+            .count();
+        assert_eq!(refreshed_count, recurring.len());
+        // The scanned funding receipt also needs transaction enhancement.
+        // Refreshing an unrelated empty address cannot settle that request.
+        assert_eq!(remaining.len() - refreshed_count, initial_nonrecurring);
+    }
 
     #[test]
     fn history_stage_has_no_directory_entry() {

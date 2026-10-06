@@ -1,0 +1,32 @@
+{
+  "architecture": "amd64",
+  "config_digest": "sha256:5602769f827c2654355402366a8a0424a987ab11a73cd0df1575ab7c4663ad06",
+  "image_ref": "ghcr.io/tamnys/zecret-service-preview@sha256:a756418d5a394c156138d4c0b624459d41b5b628c3ad6842726835f95d3b3e35",
+  "image_run": 37502094126,
+  "native_artifact_digest": "sha256:1d381d6aee1de5681d6ff6352479a3ab759662ced12021245176057e554895ae",
+  "native_commit": "608219bec7b403f4f18f7965b69dfaeefcc64a41",
+  "native_run": 37498404121,
+  "os": "linux",
+  "source_commit": "304a8c173277c3f0382241f1dc693e6faf8303c3",
+  "schema_version": 1,
+  "release_id": "phala-prod5-nu7-wallet-read-20261006",
+  "release_manifest_sha256": "7819dc15c9cf8fe6e9188afe6692ebb9867b87db1cbd071345f2552b084ea8f7",
+  "launch_config_sha256": "ac7b4559f5709d4246196ec258add7ad56ad0541f2a3377b3112e7b12322b943",
+  "measurement_reference_sha256": "4b1a5f0561931bd1f24ec6af6f096722e5b509d1043d29529227392261d4812d",
+  "trust_model": "phala-managed-guest-kms-key-pinned-runtime",
+  "acceptance_record": "records/phala-wallet-context-live-2026-10-06.md",
+  "reference_client_source_commit": "e8505309b5f6ec3e5ca911b30021c272424ab284",
+  "package_files_sha256": {
+    "wallet-read-app-compose.json": "ac7b4559f5709d4246196ec258add7ad56ad0541f2a3377b3112e7b12322b943",
+    "wallet-read-boot-reference.json": "e709d9cab67d8c351a59d6ac768eb737377774fb95e10478879509439be2b682",
+    "wallet-read-collateral.json": "8fec30d7a72638d812a591b55fa3f158ac66c49b047cd5af6aa643e9a82d4afe",
+    "wallet-read-selection-policy.json": "d11b30bd2c597b2b9403f63dd9fbb9869eeae098535442ce33d31b6edefa0856"
+  },
+  "packaged_verification": {
+    "phala_trusted_authorized": true,
+    "private_accepted": false,
+    "simulation": false,
+    "query_sent": false
+  },
+  "packaged_embedded_info_node_height": 4472464
+}

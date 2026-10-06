@@ -12,6 +12,88 @@ use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
 use zrpc_wallet_read::{NodeReadContext, wire};
 use zrpc_wallet_sdk::bridge::LocalWalletAdapter;
 
+#[tokio::test]
+#[ignore = "requires a live approved bridge, three tickets and a local resource controller"]
+async fn verified_bridge_measures_slow_consumer_and_cancellation() -> Result<(), Box<dyn Error>> {
+    use tokio::{io::AsyncReadExt, net::UnixListener};
+    use zrpc_payments::PrivateDirectory;
+
+    let bind: SocketAddr = std::env::var("ZRPC_LIVE_WALLET_BRIDGE")?.parse()?;
+    let capability = PathBuf::from(std::env::var("ZRPC_LIVE_WALLET_CAPABILITY_DIR")?);
+    let control = PathBuf::from(std::env::var("ZRPC_LIVE_RESOURCE_CONTROL_DIR")?);
+    PrivateDirectory::open(&control)?;
+    let socket = control.join("slow-consumer.sock");
+    let mut adapter = LocalWalletAdapter::connect(bind, &capability).await?;
+    let tip = adapter
+        .client()
+        .get_latest_block(wire::ChainSpec {})
+        .await?
+        .into_inner();
+    let fixtures = [
+        wire::CompactBlock::decode(
+            include_bytes!("../../../tests/fixtures/zcash/testnet-compact-4465070.pb").as_slice(),
+        )?,
+        wire::CompactBlock::decode(
+            include_bytes!("../../../tests/fixtures/zcash/testnet-compact-4465071.pb").as_slice(),
+        )?,
+    ];
+    assert!(tip.height > fixtures[1].height);
+    let started = std::time::Instant::now();
+    let mut blocks = adapter
+        .client()
+        .get_block_range(range(fixtures[0].height, tip.height))
+        .await?
+        .into_inner();
+    let mut bytes = 0_usize;
+    for expected in &fixtures {
+        let block = blocks
+            .message()
+            .await?
+            .ok_or("range omitted a pinned block")?;
+        assert_eq!(&block, expected);
+        bytes = bytes
+            .checked_add(block.encoded_len())
+            .ok_or("payload size overflow")?;
+    }
+    let elapsed = started.elapsed();
+    // Consumption stays paused until the controller has collected the guest
+    // and bridge memory samples. No invented sleep, deadline or rate target.
+    // Creating the socket now tells the controller both fixture blocks have
+    // arrived and the consumer is paused, rather than still opening its RPC.
+    let listener = UnixListener::bind(&socket)?;
+    let (mut controller, _) = listener.accept().await?;
+    let mut release = [0_u8; 1];
+    controller.read_exact(&mut release).await?;
+    assert_eq!(release, [b'c']);
+    let memory = std::fs::read_to_string("/proc/self/status")?;
+    let high_water = memory
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))
+        .ok_or("kernel memory high-water observation unavailable")?;
+    drop(blocks);
+    let cancelled = std::time::Instant::now();
+    let next = adapter
+        .client()
+        .get_latest_block(wire::ChainSpec {})
+        .await?
+        .into_inner();
+    assert!(next.height >= fixtures[1].height);
+    assert_eq!(next.hash.len(), 32);
+    // Protobuf payload/time is application throughput through Tor, including
+    // attestation startup; it is not a saturated Tor capacity measurement.
+    eprintln!(
+        "resource_observation delivered_blocks={} protobuf_bytes={} open_to_items_elapsed_ns={} client_memory_high_water={} cancel_to_fresh_read_elapsed_ns={} partial_range_complete=false",
+        fixtures.len(),
+        bytes,
+        elapsed.as_nanos(),
+        high_water,
+        cancelled.elapsed().as_nanos()
+    );
+    drop(listener);
+    std::fs::remove_file(socket)?;
+    Ok(())
+}
+
 fn selected(height: u64) -> wire::BlockId {
     wire::BlockId {
         height,

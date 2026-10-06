@@ -2,14 +2,16 @@
 
 The Rust wallet reader supplies Zcash testnet blockchain data to wallet software. It does not accept a seed, spending key, viewing key, or wallet database. The reference reader keeps its viewing key and SQLite wallet on your device and uses the maintained Zcash wallet scanner for shielded scanning and local balance calculation.
 
-The supported connection is:
+Wallet software can embed the Rust SDK or use the protected local bridge:
 
 ```text
-wallet application → authenticated loopback gRPC bridge → Rust wallet reader
+wallet application → Rust SDK, directly or through authenticated loopback gRPC
   → local Tor → attested Phala TLS session → wrapper → loopback Zebra
 ```
 
-The bridge requires a wallet-capable, client-approved Phala release. It uses the explicit `phala-trusted` profile, which trusts Phala's guest administration, KMS, and persistent runtime controls. The provider-independent profile remains unavailable. An older block-query-only endpoint or release policy cannot authorize wallet reads.
+Both paths require a wallet-capable, client-approved Phala release. They use the explicit `phala-trusted` profile, which trusts Phala's guest administration, KMS, and persistent runtime controls. The provider-independent profile remains unavailable. An older block-query-only endpoint or release policy cannot authorize wallet reads.
+
+The packaged testnet release uses [the exact launch configuration](../deploy/phala/releases/2026-10-06/wallet-read-app-compose.json), [offline collateral](../deploy/phala/releases/2026-10-06/wallet-read-collateral.json), and [release selector](../deploy/phala/releases/2026-10-06/wallet-read-selection-policy.json). Set `ZRPC_APP_COMPOSE`, `ZRPC_COLLATERAL`, and `ZRPC_RELEASE_POLICY` to those local files. The selector narrows the client’s packaged approval; it cannot approve another image or deployment. Collateral must remain valid at verification time. Obtain the endpoint from the operator of this exact deployment; creating a replacement requires a new reviewed instance selection and client release.
 
 ## Build and configure
 
@@ -80,6 +82,31 @@ Set `ZRPC_WALLET_DIR` to a new private directory, `ZRPC_UFVK_FILE` to an owner-p
   "$ZRPC_WALLET_DIR/wallet.sqlite"
 ```
 
-`scan` resumes from the local wallet and compact-block cache after an interruption. Its report separates wallet scan height from node tip height and labels transparent totals as unreconciled when the requested history or spentness checks are incomplete. Transparent history is staged in an unnamed local file and committed to the wallet only after the complete stream and chain anchor validate. If the filesystem does not support Linux `O_TMPFILE`, staging uses an anonymous memory-backed file; its memory use grows with the staged history. Other filesystem errors remain errors. For address checks that include pending transactions, `scan` leaves the pending portion unresolved until its finite mempool snapshot checks complete. `pending` retrieves the node's finite transaction-ID snapshot and corresponding transactions only after the wallet scan reaches the same node tip; a changed tip prevents completion. A mempool observation is not a confirmation; scan again to reconcile it with mined chain data. Zebra keeps its mempool inactive while the node is behind the network tip.
+`scan` resumes from the local wallet and compact-block cache after an interruption. Its report distinguishes committed wallet scan progress from the node's pending snapshot and labels transparent totals as unreconciled when the requested history or spentness checks are incomplete. Transparent history is staged in an unnamed local file and committed to the wallet only after the complete stream and chain anchor validate. If the filesystem does not support Linux `O_TMPFILE`, staging uses an anonymous memory-backed file; its memory use grows with the staged history. Other filesystem errors remain errors.
+
+`pending` retrieves a finite node transaction-ID snapshot and its corresponding transactions. The snapshot may be newer than the wallet's scanned height. The reader validates both chain anchors and requires compatible consensus and note-decryption rules before committing the complete observation. If a member mines after the snapshot, its later observed mined height is preserved and the transition is counted separately. Later blocks may extend the chain; changed anchors, an interpretation boundary, or an interrupted transaction read require another scan or read. The report shows the wallet anchor, pending snapshot height and hash, and the number of newer blocks not yet scanned. It does not advance the wallet's confirmed scan height or claim an atomic balance or transaction-status snapshot.
+
+For address checks that include pending transactions, `scan` leaves that portion unresolved until the finite snapshot checks complete. Open-ended address refresh requests recur even after a successful check; their count is reported separately from unfinished transaction and bounded-history work. Confirmed history is checked only through the scanned wallet height. A mempool observation is not a confirmation; scan again to reconcile it with mined chain data. Zebra keeps its mempool inactive while the node is behind the network tip.
+
+## Embedded Rust integration
+
+`zrpc_wallet_sdk::EmbeddedWalletAdapter::new(reader)` accepts a configured `WalletReader` and exposes the same typed clients as `LocalWalletAdapter`, including `maintained_scanner_client()` for the maintained wallet synchronization code. It creates no local listener or capability file. The in-process services retain the same request checks, verified upstream reads, ticket accounting, backpressure and cancellation. Keep the wallet database and viewing key in the calling wallet application.
+
+The reference reader supports this path with `--embedded`. It uses the same endpoint, Tor, collateral, launch, release-policy and ticket inputs as the bridge:
+
+```sh
+./target/debug/zrpc-wallet-reference scan --embedded \
+  --privacy-profile phala-trusted --platform phala-dstack \
+  --endpoint-host "$ZRPC_ENDPOINT_HOST" --endpoint-port "$ZRPC_ENDPOINT_PORT" \
+  --tor-executable "$ZRPC_TOR" --collateral "$ZRPC_COLLATERAL" \
+  --app-compose "$ZRPC_APP_COMPOSE" --release-policy "$ZRPC_RELEASE_POLICY" \
+  --ticket-store "$ZRPC_TICKET_STORE" \
+  --issuer-public-der "$ZRPC_ISSUER_PUBLIC_DER" \
+  --issuer-name "$ZRPC_ISSUER_NAME" --crypto-helper "$ZRPC_CRYPTO_HELPER" -- \
+  "$ZRPC_WALLET_DIR/wallet.sqlite" "$ZRPC_CACHE_DIR/blocks.sqlite" \
+  "$ZRPC_SCAN_BATCH_SIZE"
+```
+
+`init`, `pending` and `probe` accept the same embedded connection options before `--`, followed by their usual wallet or method inputs. A restart resumes from the same local wallet and cache; it opens freshly verified upstream connections rather than retaining authorization from the previous process.
 
 The wallet bridge exposes only the pinned read-only lightwalletd-compatible methods. It rejects transaction submission, key management, testing-only methods, arbitrary forwarding, and unsupported networks. Tor, attestation, release matching, collateral validity, and the TLS connection binding must pass before a wallet request body is sent.

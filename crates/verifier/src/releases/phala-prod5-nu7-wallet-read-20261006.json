@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "release_id": "phala-prod5-nu7-wallet-read-20261006",
+  "trust_model": "phala-managed-guest-kms-key-pinned-runtime",
+  "stock_os_sha256": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
+  "measurement_reference_sha256": "4b1a5f0561931bd1f24ec6af6f096722e5b509d1043d29529227392261d4812d",
+  "launch_config_sha256": "ac7b4559f5709d4246196ec258add7ad56ad0541f2a3377b3112e7b12322b943",
+  "pre_launch_script_sha256": "982181610f70be9087b1c69b36b719b47b82d37fcef8acc9289ed3bb3095ffe8",
+  "container_digests": [
+    "sha256:a73f032681a26f8b2cb960cd32f355c478612e49ae657b5ca656f2b105fb4d78",
+    "sha256:a756418d5a394c156138d4c0b624459d41b5b628c3ad6842726835f95d3b3e35",
+    "sha256:a756418d5a394c156138d4c0b624459d41b5b628c3ad6842726835f95d3b3e35"
+  ],
+  "kms_identity": "3059301306072a8648ce3d020106082a8648ce3d030107034200048844eb42ccdf8c52fd4f174f362fcb9bbd19c45fd48f1edec2d8f1ca23536ec1a74021b4cee610c074f8294d431b2b7fee2c39e5333fdaf0a4522d43fb159d9f",
+  "workload": {
+    "schema_version": 2,
+    "mrtd": "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077",
+    "rtmr0": "fb14dc139f33d6fcf474bc8332cac001259fb31cfbcb6b34d4ceeb552a2c4466884a0cbde45ad98a05c5c060c23ad65a",
+    "rtmr1": "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c",
+    "rtmr2": "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858",
+    "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
+    "compose_hash": "ac7b4559f5709d4246196ec258add7ad56ad0541f2a3377b3112e7b12322b943",
+    "app_id": "5d58b973895b87dd0fd29316145979dbe87273fa",
+    "instance_id": "d9c922e782105dbcc4b8c8d6e5cde7f861e52f98",
+    "storage_fs": "ext4",
+    "key_provider": {
+      "name": "kms",
+      "id": "3059301306072a8648ce3d020106082a8648ce3d030107034200048844eb42ccdf8c52fd4f174f362fcb9bbd19c45fd48f1edec2d8f1ca23536ec1a74021b4cee610c074f8294d431b2b7fee2c39e5333fdaf0a4522d43fb159d9f"
+    }
+  }
+}

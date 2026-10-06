@@ -3,13 +3,16 @@
 #![forbid(unsafe_code)]
 
 pub mod bridge;
+pub use bridge::{EmbeddedWalletAdapter, WalletAdapter};
 
 use std::{collections::HashSet, future::Future, sync::Mutex};
-use zrpc_client::inspection::{PrivateEndpointConfig, connect_phala_trusted_wallet};
+pub use zrpc_client::inspection::PrivateEndpointConfig;
+use zrpc_client::inspection::connect_phala_trusted_wallet;
 use zrpc_payments::{ClientStore, IssuerPublic};
+pub use zrpc_protocol::Backend;
 use zrpc_protocol::{ErrorCode, SafeError};
 use zrpc_transport::WalletReadResult;
-use zrpc_verifier::PhalaTrustedPolicy;
+pub use zrpc_verifier::PhalaTrustedPolicy;
 pub use zrpc_wallet_read::NodeReadContext;
 use zrpc_wallet_read::{
     RangeContinuity, ReadMethod, SubtreeContinuity, WalletReadRequest, snapshot_wire, wire,
