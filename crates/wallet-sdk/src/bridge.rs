@@ -2,7 +2,7 @@
 //! the per-run capability before it decodes a protobuf request body. No wallet
 //! state is kept here; every permitted method goes through `WalletReader`.
 
-use crate::{WalletReadCompletion, WalletReadItem, WalletReader};
+use crate::{NodeObservation, WalletReadCompletion, WalletReadItem, WalletReader};
 use futures_util::{Stream, stream};
 use std::{
     fs::OpenOptions,
@@ -28,6 +28,8 @@ use wire::compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServe
 use zeroize::Zeroize;
 use zrpc_payments::{PrivateDirectory, SecretBytes};
 use zrpc_protocol::{ErrorCode, SafeError};
+pub use zrpc_wallet_read::local_status_wire;
+use zrpc_wallet_read::local_status_wire::local_status_server::{LocalStatus, LocalStatusServer};
 pub use zrpc_wallet_read::snapshot_wire;
 use zrpc_wallet_read::snapshot_wire::snapshot_read_server::{SnapshotRead, SnapshotReadServer};
 use zrpc_wallet_read::{WalletReadRequest, wire};
@@ -37,6 +39,9 @@ pub type LocalClient = wire::compact_tx_streamer_client::CompactTxStreamerClient
     tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
 >;
 pub type LocalSnapshotClient = snapshot_wire::snapshot_read_client::SnapshotReadClient<
+    tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+>;
+pub type LocalStatusClient = local_status_wire::local_status_client::LocalStatusClient<
     tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
 >;
 pub type MaintainedScannerClient =
@@ -61,6 +66,17 @@ pub struct WalletBridgeStatus {
     pub last_outcome: BridgeReadOutcome,
     /// None means the ticket outcome is not established by this snapshot.
     pub last_ticket_spent: Option<bool>,
+    /// Historical node-reported progress from a completed verified read.
+    pub last_node_observation: Option<NodeObservation>,
+    /// Historical local-client report; no wallet state is held by the bridge.
+    pub last_wallet_scan: Option<WalletScanProgress>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WalletScanProgress {
+    pub fully_scanned_height: u32,
+    pub wallet_tip_height: u32,
+    pub compact_scan_complete: bool,
 }
 
 impl Default for WalletBridgeStatus {
@@ -69,6 +85,8 @@ impl Default for WalletBridgeStatus {
             active: false,
             last_outcome: BridgeReadOutcome::NotAttempted,
             last_ticket_spent: None,
+            last_node_observation: None,
+            last_wallet_scan: None,
         }
     }
 }
@@ -81,11 +99,9 @@ struct ActivityGuard {
 impl ActivityGuard {
     fn begin(status: Arc<StdMutex<WalletBridgeStatus>>) -> Result<Self, SafeError> {
         let mut snapshot = status.lock().map_err(|_| unavailable())?;
-        *snapshot = WalletBridgeStatus {
-            active: true,
-            last_outcome: BridgeReadOutcome::InProgress,
-            last_ticket_spent: None,
-        };
+        snapshot.active = true;
+        snapshot.last_outcome = BridgeReadOutcome::InProgress;
+        snapshot.last_ticket_spent = None;
         drop(snapshot);
         Ok(Self {
             status,
@@ -95,11 +111,12 @@ impl ActivityGuard {
 
     fn complete(&mut self, result: WalletReadCompletion) -> Result<(), SafeError> {
         let mut snapshot = self.status.lock().map_err(|_| unavailable())?;
-        *snapshot = WalletBridgeStatus {
-            active: false,
-            last_outcome: BridgeReadOutcome::Completed,
-            last_ticket_spent: Some(result.ticket_spent),
-        };
+        snapshot.active = false;
+        snapshot.last_outcome = BridgeReadOutcome::Completed;
+        snapshot.last_ticket_spent = Some(result.ticket_spent);
+        if let Some(observation) = result.node_observation {
+            snapshot.last_node_observation = Some(observation);
+        }
         self.completed = true;
         Ok(())
     }
@@ -109,11 +126,9 @@ impl Drop for ActivityGuard {
     fn drop(&mut self) {
         if !self.completed {
             if let Ok(mut snapshot) = self.status.lock() {
-                *snapshot = WalletBridgeStatus {
-                    active: false,
-                    last_outcome: BridgeReadOutcome::Unavailable,
-                    last_ticket_spent: None,
-                };
+                snapshot.active = false;
+                snapshot.last_outcome = BridgeReadOutcome::Unavailable;
+                snapshot.last_ticket_spent = None;
             }
         }
     }
@@ -242,6 +257,31 @@ impl LocalWalletAdapter {
         )
     }
 
+    /// Report only committed local scan heights. This call stays on the
+    /// capability-protected loopback bridge and spends no admission ticket.
+    pub async fn report_scan_progress(
+        &self,
+        progress: WalletScanProgress,
+    ) -> Result<(), SafeError> {
+        if progress.fully_scanned_height > progress.wallet_tip_height {
+            return Err(unavailable());
+        }
+        let mut client =
+            local_status_wire::local_status_client::LocalStatusClient::with_interceptor(
+                self.channel.clone(),
+                self.interceptor.clone(),
+            );
+        client
+            .report_scan_progress(local_status_wire::ScanProgress {
+                fully_scanned_height: u64::from(progress.fully_scanned_height),
+                wallet_tip_height: u64::from(progress.wallet_tip_height),
+                compact_scan_complete: progress.compact_scan_complete,
+            })
+            .await
+            .map_err(|_| unavailable())?;
+        Ok(())
+    }
+
     /// Uses the maintained `zcash_client_backend` generated protobuf types and
     /// their native sync APIs, while retaining the bridge's local capability.
     pub fn maintained_scanner_client(&self) -> MaintainedScannerClient {
@@ -301,6 +341,11 @@ impl WalletBridge {
         let snapshot_service = SnapshotReadServer::with_interceptor(self.clone(), move |request| {
             authenticate(request, &snapshot_capability)
         });
+        let status_capability = self.capability.clone();
+        let local_status_service =
+            LocalStatusServer::with_interceptor(self.clone(), move |request| {
+                authenticate(request, &status_capability)
+            });
         let service = CompactTxStreamerServer::with_interceptor(self, move |request| {
             authenticate(request, &capability)
         });
@@ -311,6 +356,7 @@ impl WalletBridge {
         Server::builder()
             .add_service(service)
             .add_service(snapshot_service)
+            .add_service(local_status_service)
             .serve_with_incoming_shutdown(incoming, shutdown)
             .await
             .map_err(|_| unavailable())
@@ -699,6 +745,38 @@ impl CompactTxStreamer for WalletBridge {
     }
 }
 
+fn checked_scan_progress(
+    input: local_status_wire::ScanProgress,
+) -> Result<WalletScanProgress, Status> {
+    let fully_scanned_height = u32::try_from(input.fully_scanned_height)
+        .map_err(|_| Status::invalid_argument("Invalid local scan height."))?;
+    let wallet_tip_height = u32::try_from(input.wallet_tip_height)
+        .map_err(|_| Status::invalid_argument("Invalid local wallet tip."))?;
+    if fully_scanned_height > wallet_tip_height {
+        return Err(Status::invalid_argument("Invalid local scan progress."));
+    }
+    Ok(WalletScanProgress {
+        fully_scanned_height,
+        wallet_tip_height,
+        compact_scan_complete: input.compact_scan_complete,
+    })
+}
+
+#[tonic::async_trait]
+impl LocalStatus for WalletBridge {
+    async fn report_scan_progress(
+        &self,
+        request: Request<local_status_wire::ScanProgress>,
+    ) -> Result<Response<local_status_wire::ScanProgressAck>, Status> {
+        let progress = checked_scan_progress(request.into_inner())?;
+        self.status
+            .lock()
+            .map_err(|_| Status::unavailable("Local wallet status unavailable."))?
+            .last_wallet_scan = Some(progress);
+        Ok(Response::new(local_status_wire::ScanProgressAck {}))
+    }
+}
+
 #[tonic::async_trait]
 impl SnapshotRead for WalletBridge {
     type GetMempoolSnapshotStream = ReadStream<snapshot_wire::SnapshotItem>;
@@ -725,6 +803,11 @@ mod tests {
     #[test]
     fn bridge_activity_only_reports_verified_completion_after_full_read() {
         let status = Arc::new(StdMutex::new(WalletBridgeStatus::default()));
+        status.lock().unwrap().last_wallet_scan = Some(WalletScanProgress {
+            fully_scanned_height: 40,
+            wallet_tip_height: 42,
+            compact_scan_complete: false,
+        });
         assert_eq!(
             status.lock().unwrap().last_outcome,
             BridgeReadOutcome::NotAttempted
@@ -740,6 +823,7 @@ mod tests {
         assert!(!snapshot.active);
         assert_eq!(snapshot.last_outcome, BridgeReadOutcome::Unavailable);
         assert_eq!(snapshot.last_ticket_spent, None);
+        assert_eq!(snapshot.last_wallet_scan.unwrap().fully_scanned_height, 40);
         {
             let mut completed = ActivityGuard::begin(status.clone()).unwrap();
             completed
@@ -747,6 +831,10 @@ mod tests {
                     method: ReadMethod::GetLatestBlock,
                     delivered_items: 1,
                     ticket_spent: true,
+                    node_observation: Some(NodeObservation {
+                        height: 43,
+                        estimated_height: None,
+                    }),
                 })
                 .unwrap();
         }
@@ -754,6 +842,37 @@ mod tests {
         assert!(!snapshot.active);
         assert_eq!(snapshot.last_outcome, BridgeReadOutcome::Completed);
         assert_eq!(snapshot.last_ticket_spent, Some(true));
+        assert_eq!(snapshot.last_node_observation.unwrap().height, 43);
+        assert_eq!(snapshot.last_wallet_scan.unwrap().fully_scanned_height, 40);
+    }
+
+    #[test]
+    fn local_scan_report_rejects_inconsistent_or_out_of_range_heights() {
+        let valid = local_status_wire::ScanProgress {
+            fully_scanned_height: 40,
+            wallet_tip_height: 42,
+            compact_scan_complete: false,
+        };
+        assert_eq!(
+            checked_scan_progress(valid.clone())
+                .unwrap()
+                .fully_scanned_height,
+            40
+        );
+        assert!(
+            checked_scan_progress(local_status_wire::ScanProgress {
+                fully_scanned_height: 43,
+                ..valid.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            checked_scan_progress(local_status_wire::ScanProgress {
+                wallet_tip_height: u64::from(u32::MAX) + 1,
+                ..valid
+            })
+            .is_err()
+        );
     }
 
     #[test]

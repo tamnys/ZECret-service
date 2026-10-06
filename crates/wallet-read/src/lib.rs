@@ -8,6 +8,9 @@ pub mod wire {
 pub mod snapshot_wire {
     tonic::include_proto!("zrpc.wallet.snapshot.v1");
 }
+pub mod local_status_wire {
+    tonic::include_proto!("zrpc.wallet.local.v1");
+}
 
 pub mod backend;
 mod operation;
