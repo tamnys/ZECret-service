@@ -29,6 +29,7 @@ use zcash_protocol::{
     TxId,
     consensus::{BlockHeight, BranchId, Network},
 };
+use zrpc_wallet_sdk::bridge::LocalWalletAdapter;
 use zrpc_wallet_sdk::bridge::MaintainedScannerClient;
 
 #[derive(Default)]
@@ -39,6 +40,8 @@ pub struct EnhancementReport {
     pub mined_transparent_history_reads: u64,
     /// Mined history was read, but a complete pending-mempool view was unavailable.
     pub pending_unverified_checks: u64,
+    /// Address checks completed against the finite local-node mempool snapshot.
+    pub pending_snapshot_checks: u64,
     /// The request filter or range could not be handled by this reader.
     pub unsupported_history_requests: u64,
     pub remaining_requests: usize,
@@ -164,6 +167,7 @@ async fn process_mined_transparent_history(
     wallet: &mut LocalWallet,
     request: TransactionsInvolvingAddress,
     stage_dir: &Path,
+    pending_snapshot_complete: bool,
 ) -> Result<Option<MinedHistoryKind>, Box<dyn Error>> {
     let tip = wallet
         .chain_height()?
@@ -274,12 +278,10 @@ async fn process_mined_transparent_history(
         if stage.stream_position()? != stage.metadata()?.len() {
             return Err("staged transparent history has trailing data".into());
         }
-        // The finite Mined + All range is complete even when it contains
-        // transactions. Record that fact after importing the whole validated
-        // stream. All + Unspent also asks about pending transactions, but the
-        // pinned backend has no initial mempool-snapshot marker, so it cannot
-        // authorize this notification.
-        if kind == MinedHistoryKind::Complete {
+        // The mined range is complete only after its stream and chain anchor
+        // are checked. All + Unspent also requires the complete local-node
+        // mempool ID snapshot and full transactions at the same scanned tip.
+        if kind == MinedHistoryKind::Complete || pending_snapshot_complete {
             wdb.notify_address_checked(request, end)?;
         }
         Ok(())
@@ -288,24 +290,45 @@ async fn process_mined_transparent_history(
 }
 
 pub async fn process_snapshot(
+    adapter: &LocalWalletAdapter,
     client: &mut MaintainedScannerClient,
     wallet: &mut LocalWallet,
     stage_dir: &Path,
 ) -> Result<EnhancementReport, Box<dyn Error>> {
     let mut report = EnhancementReport::default();
     let requests = wallet.transaction_data_requests()?;
+    let needs_pending_snapshot = requests.iter().any(|request| {
+        matches!(request, TransactionDataRequest::TransactionsInvolvingAddress(history)
+            if matches!(history.tx_status_filter(), TransactionStatusFilter::All)
+                && matches!(history.output_status_filter(), OutputStatusFilter::Unspent))
+    });
+    if needs_pending_snapshot {
+        crate::process_pending_snapshot(adapter, client, wallet, stage_dir).await?;
+    }
     for request in requests {
         let (txid, enhance) = match request {
             TransactionDataRequest::GetStatus(txid) => (txid, false),
             TransactionDataRequest::Enhancement(txid) => (txid, true),
             TransactionDataRequest::TransactionsInvolvingAddress(history) => {
-                match process_mined_transparent_history(client, wallet, history, stage_dir).await? {
+                match process_mined_transparent_history(
+                    client,
+                    wallet,
+                    history,
+                    stage_dir,
+                    needs_pending_snapshot,
+                )
+                .await?
+                {
                     Some(MinedHistoryKind::Complete) => {
                         report.mined_transparent_history_reads += 1;
                     }
                     Some(MinedHistoryKind::PendingUnresolved) => {
                         report.mined_transparent_history_reads += 1;
-                        report.pending_unverified_checks += 1;
+                        if needs_pending_snapshot {
+                            report.pending_snapshot_checks += 1;
+                        } else {
+                            report.pending_unverified_checks += 1;
+                        }
                     }
                     None => report.unsupported_history_requests += 1,
                 }

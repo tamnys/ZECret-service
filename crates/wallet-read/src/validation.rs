@@ -1,4 +1,4 @@
-use super::{ReadMethod, wire};
+use super::{ReadMethod, snapshot_wire, wire};
 use prost::Message;
 use std::collections::HashSet;
 use tonic::Status;
@@ -114,6 +114,12 @@ pub fn validate_unary_request(method: ReadMethod, payload: &[u8]) -> Result<Vec<
                 return Err(invalid());
             }
             Ok(request.encode_to_vec())
+        }
+        ReadMethod::GetMempoolSnapshot => {
+            if !payload.is_empty() {
+                return Err(invalid());
+            }
+            Ok(decode::<snapshot_wire::SnapshotRequest>(payload)?.encode_to_vec())
         }
         ReadMethod::GetMempoolStream
         | ReadMethod::GetLatestTreeState

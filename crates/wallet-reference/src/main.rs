@@ -20,8 +20,8 @@ use zcash_client_backend::{
     data_api::wallet::{ConfirmationsPolicy, decrypt_and_store_transaction},
     data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite},
     proto::service::{
-        BlockId, BlockRange, ChainSpec, Empty, GetMempoolTxRequest, RawTransaction,
-        TransparentAddressBlockFilter, TxFilter,
+        BlockId, BlockRange, ChainSpec, Empty, RawTransaction, TransparentAddressBlockFilter,
+        TxFilter,
     },
     sync,
 };
@@ -31,7 +31,7 @@ use zcash_primitives::{block::BlockHash, transaction::Transaction};
 use zcash_protocol::consensus::{BlockHeight, Network};
 use zeroize::Zeroize;
 use zrpc_payments::PrivateDirectory;
-use zrpc_wallet_sdk::bridge::LocalWalletAdapter;
+use zrpc_wallet_sdk::bridge::{LocalWalletAdapter, MaintainedScannerClient, snapshot_wire};
 
 mod cache;
 mod enhance;
@@ -403,6 +403,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
         }
     }
     let enhanced = enhance::process_snapshot(
+        &adapter,
         &mut client,
         &mut wallet,
         wallet_path.parent().ok_or("wallet path has no parent")?,
@@ -414,7 +415,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     // freshness or provider-independent TEE isolation.
     if let Some(summary) = wallet.get_wallet_summary(ConfirmationsPolicy::default())? {
         println!(
-            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
+            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_snapshot_checks={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
             u32::from(summary.fully_scanned_height()),
             u32::from(summary.chain_tip_height()),
             summary.is_synced(),
@@ -422,6 +423,7 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             enhanced.enhanced,
             enhanced.status_checks,
             enhanced.mined_transparent_history_reads,
+            enhanced.pending_snapshot_checks,
             enhanced.pending_unverified_checks,
             enhanced.unsupported_history_requests,
             enhanced.remaining_requests,
@@ -471,9 +473,30 @@ async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     if !summary.is_synced() {
         return Err("finish the local wallet scan before reading the mempool".into());
     }
-    let local_tip = summary.chain_tip_height();
     let adapter = LocalWalletAdapter::connect(bind, &capability_dir).await?;
     let mut client = adapter.maintained_scanner_client();
+    let staged_count = process_pending_snapshot(
+        &adapter,
+        &mut client,
+        &mut wallet,
+        wallet_path.parent().ok_or("wallet path has no parent")?,
+    )
+    .await?;
+    println!(
+        "mempool_transactions_processed={staged_count} status=observed_at_node_snapshot_rescan_to_reconcile"
+    );
+    Ok(())
+}
+
+pub(crate) async fn process_pending_snapshot(
+    adapter: &LocalWalletAdapter,
+    client: &mut MaintainedScannerClient,
+    wallet: &mut LocalWallet,
+    stage_dir: &Path,
+) -> Result<u64, Box<dyn Error>> {
+    let local_tip = wallet
+        .chain_height()?
+        .ok_or("wallet chain tip unavailable")?;
     let node_tip = client.get_latest_block(ChainSpec {}).await?.into_inner();
     let local_hash = wallet
         .get_block_hash(local_tip)?
@@ -486,36 +509,54 @@ async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
             .checked_add(1)
             .ok_or("wallet chain height overflow")?,
     );
-    // The pinned Zebra GetMempoolStream stays open until the next block, so it
-    // cannot finish a one-shot read when the chain is quiet. Its finite
-    // GetMempoolTx result contains shielded compact transactions only.
-    let mut stream = client
-        .get_mempool_tx(GetMempoolTxRequest {
-            exclude_txid_suffixes: vec![],
-            pool_types: vec![],
-        })
+    // This project-specific read snapshots every local-node mempool ID,
+    // including transparent-only transactions. The first item anchors the
+    // finite set to the same tip already scanned by this wallet.
+    let mut snapshot_client = adapter.snapshot_client();
+    let mut stream = snapshot_client
+        .get_mempool_snapshot(snapshot_wire::SnapshotRequest {})
         .await?
         .into_inner();
     // The bridge serializes wallet RPCs while a stream is active. Finish this
     // stream before asking for full transactions on the same local client.
-    let mut ids =
-        enhance::open_history_stage(wallet_path.parent().ok_or("wallet path has no parent")?)?;
+    let mut ids = enhance::open_history_stage(stage_dir)?;
     let mut staged_count = 0_u64;
-    while let Some(compact) = stream.message().await? {
-        if compact.txid.len() != 32 {
-            return Err("mempool returned an invalid transaction identifier".into());
+    let mut saw_tip = false;
+    while let Some(item) = stream.message().await? {
+        match item.body {
+            Some(snapshot_wire::snapshot_item::Body::Tip(tip)) if !saw_tip => {
+                if !same_scanned_tip(
+                    local_tip,
+                    local_hash,
+                    &BlockId {
+                        height: tip.height,
+                        hash: tip.hash,
+                    },
+                ) {
+                    return Err("mempool snapshot tip differs from the scanned wallet".into());
+                }
+                saw_tip = true;
+            }
+            Some(snapshot_wire::snapshot_item::Body::Txid(txid)) if saw_tip => {
+                if txid.len() != 32 {
+                    return Err("mempool returned an invalid transaction identifier".into());
+                }
+                ids.write_all(&txid)?;
+                staged_count = staged_count
+                    .checked_add(1)
+                    .ok_or("mempool transaction count overflow")?;
+            }
+            _ => return Err("mempool snapshot is malformed".into()),
         }
-        ids.write_all(&compact.txid)?;
-        staged_count = staged_count
-            .checked_add(1)
-            .ok_or("mempool transaction count overflow")?;
+    }
+    if !saw_tip {
+        return Err("mempool snapshot omitted its chain tip".into());
     }
     drop(stream);
     ids.seek(SeekFrom::Start(0))?;
     // Stage full transactions in an unnamed local file so a failed read
     // cannot partially update the wallet or consume unbounded memory.
-    let mut stage =
-        enhance::open_history_stage(wallet_path.parent().ok_or("wallet path has no parent")?)?;
+    let mut stage = enhance::open_history_stage(stage_dir)?;
     for _ in 0..staged_count {
         let mut txid = [0_u8; 32];
         ids.read_exact(&mut txid)?;
@@ -571,12 +612,9 @@ async fn pending(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })?;
-    // This is an observation, not a complete mempool snapshot: Zebra omits
-    // transparent-only transactions and the mempool may change during reads.
-    println!(
-        "shielded_mempool_transactions_processed={staged_count} status=observed_incomplete_rescan_to_reconcile"
-    );
-    Ok(())
+    // Complete only for the node's local mempool at the snapshot instant. It
+    // does not assert that the network mempool stayed unchanged afterward.
+    Ok(staged_count)
 }
 
 #[cfg(test)]

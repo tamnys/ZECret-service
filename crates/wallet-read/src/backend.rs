@@ -3,7 +3,7 @@
 //! wrapper must still authorize each remote call before invoking it.
 
 use crate::{
-    RangeContinuity, ReadMethod, SubtreeContinuity, validate_client_stream_address,
+    RangeContinuity, ReadMethod, SubtreeContinuity, snapshot_wire, validate_client_stream_address,
     validate_compact_block, validate_compact_tx, validate_nullifier_only_block,
     validate_unary_request, wire,
 };
@@ -20,6 +20,16 @@ use tonic::{
 };
 
 type ReadStream<T> = futures_util::stream::BoxStream<'static, Result<T, Status>>;
+
+pub struct MempoolSnapshot {
+    pub tip: snapshot_wire::SnapshotTip,
+    pub txids: Vec<[u8; 32]>,
+}
+
+#[tonic::async_trait]
+pub trait MempoolSnapshotSource: Send + Sync {
+    async fn mempool_snapshot(&self) -> Result<MempoolSnapshot, Status>;
+}
 
 fn unavailable() -> Status {
     Status::unavailable("Wallet node is unavailable.")
@@ -156,6 +166,7 @@ fn check_info(info: &wire::LightdInfo) -> Result<(), Status> {
 #[derive(Clone)]
 pub struct ZebraReadOnly {
     endpoint: Endpoint,
+    snapshot_source: Option<Arc<dyn MempoolSnapshotSource>>,
 }
 
 impl ZebraReadOnly {
@@ -165,7 +176,15 @@ impl ZebraReadOnly {
         }
         let endpoint = Endpoint::from_shared(format!("http://{addr}"))
             .map_err(|_| Status::invalid_argument("Invalid wallet backend."))?;
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            snapshot_source: None,
+        })
+    }
+
+    pub fn with_snapshot_source(mut self, source: Arc<dyn MempoolSnapshotSource>) -> Self {
+        self.snapshot_source = Some(source);
+        self
     }
 
     async fn client(
@@ -588,9 +607,60 @@ impl wire::compact_tx_streamer_server::CompactTxStreamer for ZebraReadOnly {
     }
 }
 
+#[tonic::async_trait]
+impl snapshot_wire::snapshot_read_server::SnapshotRead for ZebraReadOnly {
+    type GetMempoolSnapshotStream = ReadStream<snapshot_wire::SnapshotItem>;
+
+    async fn get_mempool_snapshot(
+        &self,
+        request: Request<snapshot_wire::SnapshotRequest>,
+    ) -> Result<Response<Self::GetMempoolSnapshotStream>, Status> {
+        validate_unary_request(
+            ReadMethod::GetMempoolSnapshot,
+            &request.into_inner().encode_to_vec(),
+        )?;
+        let source = self.snapshot_source.as_ref().ok_or_else(unavailable)?;
+        let mut client = self.client().await?;
+        let before = client
+            .get_latest_block(wire::ChainSpec {})
+            .await
+            .map_err(sanitize)?
+            .into_inner();
+        check_block_id(&before)?;
+        let snapshot = source.mempool_snapshot().await.map_err(sanitize)?;
+        if snapshot.tip.height > u32::MAX as u64 || snapshot.tip.hash.len() != 32 {
+            return Err(invalid_data());
+        }
+        let after = client
+            .get_latest_block(wire::ChainSpec {})
+            .await
+            .map_err(sanitize)?
+            .into_inner();
+        check_block_id(&after)?;
+        if before.height != snapshot.tip.height
+            || before.hash != snapshot.tip.hash
+            || after != before
+        {
+            return Err(Status::aborted(
+                "Wallet node tip changed during the mempool read.",
+            ));
+        }
+        let first = snapshot_wire::SnapshotItem {
+            body: Some(snapshot_wire::snapshot_item::Body::Tip(snapshot.tip)),
+        };
+        let items = std::iter::once(Ok(first)).chain(snapshot.txids.into_iter().map(|txid| {
+            Ok(snapshot_wire::SnapshotItem {
+                body: Some(snapshot_wire::snapshot_item::Body::Txid(txid.to_vec())),
+            })
+        }));
+        Ok(Response::new(Box::pin(stream::iter(items))))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapshot_wire::snapshot_read_server::SnapshotRead;
     use wire::compact_tx_streamer_server::CompactTxStreamer;
     use zrpc_protocol::PREVIEW_TESTNET_ADDRESS;
 
@@ -755,6 +825,20 @@ mod tests {
                 .unwrap_err()
                 .code(),
             tonic::Code::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_requires_an_internal_source_before_connecting_to_zebra() {
+        let backend = ZebraReadOnly::new("127.0.0.1:9067".parse().unwrap()).unwrap();
+        assert_eq!(
+            backend
+                .get_mempool_snapshot(Request::new(snapshot_wire::SnapshotRequest {}))
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            tonic::Code::Unavailable
         );
     }
 }

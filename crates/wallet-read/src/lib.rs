@@ -5,6 +5,9 @@
 pub mod wire {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
+pub mod snapshot_wire {
+    tonic::include_proto!("zrpc.wallet.snapshot.v1");
+}
 
 pub mod backend;
 mod operation;
@@ -32,6 +35,7 @@ pub enum ReadMethod {
     GetTaddressBalanceStream,
     GetMempoolTx,
     GetMempoolStream,
+    GetMempoolSnapshot,
     GetTreeState,
     GetLatestTreeState,
     GetSubtreeRoots,
@@ -41,7 +45,7 @@ pub enum ReadMethod {
 }
 
 impl ReadMethod {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::GetLatestBlock,
         Self::GetBlock,
         Self::GetBlockNullifiers,
@@ -54,6 +58,7 @@ impl ReadMethod {
         Self::GetTaddressBalanceStream,
         Self::GetMempoolTx,
         Self::GetMempoolStream,
+        Self::GetMempoolSnapshot,
         Self::GetTreeState,
         Self::GetLatestTreeState,
         Self::GetSubtreeRoots,
@@ -76,6 +81,7 @@ impl ReadMethod {
             Self::GetTaddressBalanceStream => "GetTaddressBalanceStream",
             Self::GetMempoolTx => "GetMempoolTx",
             Self::GetMempoolStream => "GetMempoolStream",
+            Self::GetMempoolSnapshot => "GetMempoolSnapshot",
             Self::GetTreeState => "GetTreeState",
             Self::GetLatestTreeState => "GetLatestTreeState",
             Self::GetSubtreeRoots => "GetSubtreeRoots",
@@ -86,7 +92,11 @@ impl ReadMethod {
     }
 
     pub fn path(self) -> String {
-        format!("/cash.z.wallet.sdk.rpc.CompactTxStreamer/{}", self.name())
+        if self == Self::GetMempoolSnapshot {
+            format!("/zrpc.wallet.snapshot.v1.SnapshotRead/{}", self.name())
+        } else {
+            format!("/cash.z.wallet.sdk.rpc.CompactTxStreamer/{}", self.name())
+        }
     }
 
     pub fn from_path(path: &str) -> Option<Self> {
@@ -102,6 +112,7 @@ impl ReadMethod {
                 | Self::GetTaddressTransactions
                 | Self::GetMempoolTx
                 | Self::GetMempoolStream
+                | Self::GetMempoolSnapshot
                 | Self::GetSubtreeRoots
                 | Self::GetAddressUtxosStream
         )
@@ -121,7 +132,11 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("rpc "))
             .map(|declaration| declaration.split('(').next().unwrap())
             .collect();
-        let allowed: BTreeSet<_> = ReadMethod::ALL.iter().map(|method| method.name()).collect();
+        let allowed: BTreeSet<_> = ReadMethod::ALL
+            .iter()
+            .filter(|method| **method != ReadMethod::GetMempoolSnapshot)
+            .map(|method| method.name())
+            .collect();
         let denied: BTreeSet<_> = ["SendTransaction", "Ping"].into_iter().collect();
         assert_eq!(defined, allowed.union(&denied).copied().collect());
         assert!(allowed.is_disjoint(&denied));
@@ -135,5 +150,16 @@ mod tests {
                 .is_none()
         );
         assert!(ReadMethod::from_path("/rpc").is_none());
+        assert_eq!(
+            ReadMethod::from_path("/zrpc.wallet.snapshot.v1.SnapshotRead/GetMempoolSnapshot"),
+            Some(ReadMethod::GetMempoolSnapshot)
+        );
+        assert_eq!(
+            include_str!("../proto/snapshot.proto")
+                .lines()
+                .filter(|line| line.trim().starts_with("rpc "))
+                .count(),
+            1
+        );
     }
 }

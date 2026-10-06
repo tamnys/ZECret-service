@@ -1,7 +1,7 @@
 //! Typed wallet requests. No generated submission or testing method is
 //! representable here, and every value is validated before ticket selection.
 
-use crate::{ReadMethod, validate_unary_request, wire};
+use crate::{ReadMethod, snapshot_wire, validate_unary_request, wire};
 use prost::Message;
 use tonic::Status;
 
@@ -18,6 +18,7 @@ pub enum WalletReadRequest {
     TaddressBalanceStream(Vec<wire::Address>),
     MempoolTx(wire::Exclude),
     MempoolStream(wire::Empty),
+    MempoolSnapshot(snapshot_wire::SnapshotRequest),
     TreeState(wire::BlockId),
     LatestTreeState(wire::Empty),
     SubtreeRoots(wire::GetSubtreeRootsArg),
@@ -41,6 +42,7 @@ impl WalletReadRequest {
             Self::TaddressBalanceStream(_) => ReadMethod::GetTaddressBalanceStream,
             Self::MempoolTx(_) => ReadMethod::GetMempoolTx,
             Self::MempoolStream(_) => ReadMethod::GetMempoolStream,
+            Self::MempoolSnapshot(_) => ReadMethod::GetMempoolSnapshot,
             Self::TreeState(_) => ReadMethod::GetTreeState,
             Self::LatestTreeState(_) => ReadMethod::GetLatestTreeState,
             Self::SubtreeRoots(_) => ReadMethod::GetSubtreeRoots,
@@ -75,6 +77,7 @@ impl WalletReadRequest {
             Self::MempoolStream(value) | Self::LatestTreeState(value) | Self::LightdInfo(value) => {
                 value.encode_to_vec()
             }
+            Self::MempoolSnapshot(value) => value.encode_to_vec(),
             Self::SubtreeRoots(value) => value.encode_to_vec(),
             Self::AddressUtxos(value) | Self::AddressUtxosStream(value) => value.encode_to_vec(),
         };
@@ -101,6 +104,7 @@ mod tests {
             WalletReadRequest::TaddressBalanceStream(vec![]),
             WalletReadRequest::MempoolTx(wire::Exclude::default()),
             WalletReadRequest::MempoolStream(wire::Empty {}),
+            WalletReadRequest::MempoolSnapshot(snapshot_wire::SnapshotRequest {}),
             WalletReadRequest::TreeState(wire::BlockId::default()),
             WalletReadRequest::LatestTreeState(wire::Empty {}),
             WalletReadRequest::SubtreeRoots(wire::GetSubtreeRootsArg::default()),
