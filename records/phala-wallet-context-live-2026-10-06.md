@@ -99,3 +99,45 @@ by `2026-10-07T19:23:35Z`, preserving the approved hour before the hard deadline
 Phala guest administration and KMS remain explicit trusted assumptions. The
 strict independent profile, actual filesystem discrepancy, independent disk
 deletion evidence and final billing reconciliation remain unresolved.
+
+## Additional SDK and resource checkpoint
+
+A locally built, uncommitted reference reader completed a direct embedded SDK
+info request against this image, observing node height 4,472,235. Its local SDK
+transport uses no TCP bridge. This proves an embedded read, not complete embedded
+wallet synchronization. Twelve SDK unit tests passed before a subsequent fixture
+wire re-export; final affected-suite verification remains necessary.
+
+The live slow-consumer/cancellation test passed in 40.29 seconds. An explicit
+local controller paused consumption after two pinned blocks, then cancelled the
+incomplete range and completed a fresh verified read. The two protobuf messages
+contained 3,638 bytes and arrived 2.942767521 seconds after opening, including
+attestation and startup. This small sample does not measure saturated Tor
+throughput. Cancellation to completed fresh read took 1.892404869 seconds.
+
+Client high-water memory was 9,204 KiB. Bridge RSS samples were 7,412 KiB before,
+23,780 KiB while paused and 21,424 KiB afterward. Provider aggregate guest-memory
+samples were 799,629,312, 828,997,632 and 824,807,424 bytes respectively. These
+samples do not establish a workload-wide peak or capacity bound.
+
+Live pending reconciliation exposed a second completion issue: transactions in a
+finite mempool snapshot can become mined before their later raw-transaction
+fetch. The client-only candidate now distinguishes wallet anchor H, snapshot tip
+T and transactions mined after T, preserving canonical-anchor checks, strict
+decoding and consensus interpretation. This latest correction has not been
+rebuilt or accepted live; the previously built reader predates it.
+
+Managed CLI tests passed (10 library and 19 binary tests). The full reference
+suite then passed 35 of 37 tests. A subsequent focused run passed 21 of 23, with
+14 unchanged cache tests filtered. Two failures remain: a synthetic file-backed
+fixture reopens a regtest viewing key under testnet parameters, and maintained
+fork recovery rejects a requested rewind above its safe checkpoint
+(safe height 279,999; requested height 280,003). Passing transition guards do not
+prove atomic storage or successful fork recovery while those tests fail.
+
+The workspace's three-round correction fuse ends this checkpoint with those
+items open. Feature source, user guidance and the temporary release catalog
+remain uncommitted and unpackaged. PR 398 remains a draft evidence checkpoint;
+no final wallet release is approved. No new VM, disk or server image was created
+for these additional checks. Original budget, ledger and deletion deadlines
+remain unchanged.
