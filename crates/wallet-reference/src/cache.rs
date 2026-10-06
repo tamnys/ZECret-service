@@ -205,6 +205,15 @@ mod tests {
     use super::*;
     use zcash_client_backend::data_api::scanning::ScanPriority;
 
+    const PUBLIC_BLOCK_4465070: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/zcash/testnet-compact-4465070.pb"
+    ));
+    const PUBLIC_BLOCK_4465071: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/zcash/testnet-compact-4465071.pb"
+    ));
+
     fn block(height: u64) -> CompactBlock {
         CompactBlock {
             height,
@@ -254,5 +263,50 @@ mod tests {
             Err(CacheError::Height)
         ));
         assert_eq!(cache.get_tip_height(None).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn public_nu7_blocks_survive_restart_without_partial_range_success() {
+        let first = CompactBlock::decode(PUBLIC_BLOCK_4465070).unwrap();
+        let second = CompactBlock::decode(PUBLIC_BLOCK_4465071).unwrap();
+        assert_eq!(first.height, 4_465_070);
+        assert_eq!(second.height, 4_465_071);
+        assert_eq!(second.prev_hash, first.hash);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("compact.sqlite");
+        let cache = SqliteBlockCache::open(&path).unwrap();
+        cache.insert(vec![first.clone()]).await.unwrap();
+        drop(cache);
+
+        let cache = SqliteBlockCache::open(&path).unwrap();
+        assert!(matches!(
+            cache.read(&range(4_465_070, 4_465_072)).await,
+            Err(CacheError::Missing)
+        ));
+        cache.insert(vec![second.clone()]).await.unwrap();
+        drop(cache);
+
+        let cache = SqliteBlockCache::open(&path).unwrap();
+        let recovered = cache.read(&range(4_465_070, 4_465_072)).await.unwrap();
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].hash, first.hash);
+        assert_eq!(recovered[1].hash, second.hash);
+        assert_eq!(
+            recovered[1]
+                .vtx
+                .iter()
+                .map(|tx| tx.ironwood_actions.len())
+                .sum::<usize>(),
+            20
+        );
+        let mut scanner_heights = Vec::new();
+        cache
+            .with_blocks::<_, ()>(Some(BlockHeight::from_u32(4_465_070)), Some(2), |block| {
+                scanner_heights.push(block.height);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(scanner_heights, [4_465_070, 4_465_071]);
     }
 }
