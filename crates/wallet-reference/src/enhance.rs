@@ -35,8 +35,12 @@ use zrpc_wallet_sdk::bridge::MaintainedScannerClient;
 pub struct EnhancementReport {
     pub enhanced: u64,
     pub status_checks: u64,
-    pub mined_transparent_checks: u64,
-    pub unresolved_transparent_history: u64,
+    /// Mined address-history ranges imported after checking the scanned anchor.
+    pub mined_transparent_history_reads: u64,
+    /// Mined history was read, but a complete pending-mempool view was unavailable.
+    pub pending_unverified_checks: u64,
+    /// The request filter or range could not be handled by this reader.
+    pub unsupported_history_requests: u64,
     pub remaining_requests: usize,
 }
 
@@ -160,7 +164,7 @@ async fn process_mined_transparent_history(
     wallet: &mut LocalWallet,
     request: TransactionsInvolvingAddress,
     stage_dir: &Path,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<Option<MinedHistoryKind>, Box<dyn Error>> {
     let tip = wallet
         .chain_height()?
         .ok_or("wallet chain tip unavailable")?;
@@ -171,7 +175,7 @@ async fn process_mined_transparent_history(
         request.tx_status_filter(),
         request.output_status_filter(),
     ) else {
-        return Ok(false);
+        return Ok(None);
     };
     if end > tip {
         return Err("transparent history extends beyond the scanned wallet tip".into());
@@ -280,7 +284,7 @@ async fn process_mined_transparent_history(
         }
         Ok(())
     })?;
-    Ok(kind == MinedHistoryKind::Complete)
+    Ok(Some(kind))
 }
 
 pub async fn process_snapshot(
@@ -295,10 +299,15 @@ pub async fn process_snapshot(
             TransactionDataRequest::GetStatus(txid) => (txid, false),
             TransactionDataRequest::Enhancement(txid) => (txid, true),
             TransactionDataRequest::TransactionsInvolvingAddress(history) => {
-                if process_mined_transparent_history(client, wallet, history, stage_dir).await? {
-                    report.mined_transparent_checks += 1;
-                } else {
-                    report.unresolved_transparent_history += 1;
+                match process_mined_transparent_history(client, wallet, history, stage_dir).await? {
+                    Some(MinedHistoryKind::Complete) => {
+                        report.mined_transparent_history_reads += 1;
+                    }
+                    Some(MinedHistoryKind::PendingUnresolved) => {
+                        report.mined_transparent_history_reads += 1;
+                        report.pending_unverified_checks += 1;
+                    }
+                    None => report.unsupported_history_requests += 1,
                 }
                 continue;
             }

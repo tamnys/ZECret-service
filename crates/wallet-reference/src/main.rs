@@ -411,15 +411,16 @@ async fn scan(mut args: env::ArgsOs) -> Result<(), Box<dyn Error>> {
     // freshness or provider-independent TEE isolation.
     if let Some(summary) = wallet.get_wallet_summary(ConfirmationsPolicy::default())? {
         println!(
-            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_checks={} unresolved_transparent_history={} remaining_transaction_requests={}",
+            "wallet_scan_height={} wallet_tip_height={} compact_scan_complete={} accounts={} enhanced_transactions={} status_checks={} mined_transparent_history_reads={} pending_unverified_checks={} unsupported_history_requests={} remaining_transaction_requests={}",
             u32::from(summary.fully_scanned_height()),
             u32::from(summary.chain_tip_height()),
             summary.is_synced(),
             summary.account_balances().len(),
             enhanced.enhanced,
             enhanced.status_checks,
-            enhanced.mined_transparent_checks,
-            enhanced.unresolved_transparent_history,
+            enhanced.mined_transparent_history_reads,
+            enhanced.pending_unverified_checks,
+            enhanced.unsupported_history_requests,
             enhanced.remaining_requests,
         );
         for (account, balance) in summary.account_balances() {
