@@ -22,31 +22,39 @@ use tokio::{
 use tonic::{
     Request, Response, Status,
     service::Interceptor,
-    transport::{Channel, Endpoint, Server},
+    transport::{Endpoint, Server},
 };
 use wire::compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServer};
 use zeroize::Zeroize;
 use zrpc_payments::{PrivateDirectory, SecretBytes};
 use zrpc_protocol::{ErrorCode, SafeError};
+use zrpc_wallet_read::WalletReadRequest;
 pub use zrpc_wallet_read::local_status_wire;
 use zrpc_wallet_read::local_status_wire::local_status_server::{LocalStatus, LocalStatusServer};
 pub use zrpc_wallet_read::snapshot_wire;
 use zrpc_wallet_read::snapshot_wire::snapshot_read_server::{SnapshotRead, SnapshotReadServer};
-use zrpc_wallet_read::{WalletReadRequest, wire};
+pub use zrpc_wallet_read::wire;
+
+#[path = "embedded.rs"]
+mod embedded;
+pub use embedded::{EmbeddedWalletAdapter, WalletTransport};
 
 type ReadStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 pub type LocalClient = wire::compact_tx_streamer_client::CompactTxStreamerClient<
-    tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+    tonic::service::interceptor::InterceptedService<WalletTransport, LocalCapabilityInterceptor>,
 >;
 pub type LocalSnapshotClient = snapshot_wire::snapshot_read_client::SnapshotReadClient<
-    tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+    tonic::service::interceptor::InterceptedService<WalletTransport, LocalCapabilityInterceptor>,
 >;
 pub type LocalStatusClient = local_status_wire::local_status_client::LocalStatusClient<
-    tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+    tonic::service::interceptor::InterceptedService<WalletTransport, LocalCapabilityInterceptor>,
 >;
 pub type MaintainedScannerClient =
     zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient<
-        tonic::service::interceptor::InterceptedService<Channel, LocalCapabilityInterceptor>,
+        tonic::service::interceptor::InterceptedService<
+            WalletTransport,
+            LocalCapabilityInterceptor,
+        >,
     >;
 
 /// A local observation of the bridge, never authority for a future request.
@@ -200,13 +208,16 @@ impl Interceptor for LocalCapabilityInterceptor {
 /// Adapter for wallet software able to install a local Tonic client hook.
 /// An unmodified lightwalletd client lacks the capability metadata and is
 /// deliberately rejected by the bridge.
-pub struct LocalWalletAdapter {
+pub struct WalletAdapter {
     client: LocalClient,
-    channel: Channel,
+    transport: WalletTransport,
     interceptor: LocalCapabilityInterceptor,
 }
 
-impl LocalWalletAdapter {
+/// Capability-protected client of the loopback bridge.
+pub type LocalWalletAdapter = WalletAdapter;
+
+impl WalletAdapter {
     pub async fn connect(bind: SocketAddr, capability_dir: &Path) -> Result<Self, SafeError> {
         if !bind.ip().is_loopback() || bind.port() == 0 {
             return Err(unavailable());
@@ -235,15 +246,22 @@ impl LocalWalletAdapter {
         let endpoint =
             Endpoint::from_shared(format!("http://{bind}")).map_err(|_| unavailable())?;
         let channel = endpoint.connect().await.map_err(|_| unavailable())?;
-        let interceptor = LocalCapabilityInterceptor(Arc::new(SecretBytes::new(value)));
-        Ok(Self {
+        Ok(Self::from_transport(
+            WalletTransport::loopback(channel),
+            SecretBytes::new(value),
+        ))
+    }
+
+    fn from_transport(transport: WalletTransport, capability: SecretBytes) -> Self {
+        let interceptor = LocalCapabilityInterceptor(Arc::new(capability));
+        Self {
             client: wire::compact_tx_streamer_client::CompactTxStreamerClient::with_interceptor(
-                channel.clone(),
+                transport.clone(),
                 interceptor.clone(),
             ),
-            channel,
+            transport,
             interceptor,
-        })
+        }
     }
 
     pub fn client(&mut self) -> &mut LocalClient {
@@ -252,13 +270,13 @@ impl LocalWalletAdapter {
 
     pub fn snapshot_client(&self) -> LocalSnapshotClient {
         snapshot_wire::snapshot_read_client::SnapshotReadClient::with_interceptor(
-            self.channel.clone(),
+            self.transport.clone(),
             self.interceptor.clone(),
         )
     }
 
     /// Report only committed local scan heights. This call stays on the
-    /// capability-protected loopback bridge and spends no admission ticket.
+    /// capability-protected local service and spends no admission ticket.
     pub async fn report_scan_progress(
         &self,
         progress: WalletScanProgress,
@@ -268,7 +286,7 @@ impl LocalWalletAdapter {
         }
         let mut client =
             local_status_wire::local_status_client::LocalStatusClient::with_interceptor(
-                self.channel.clone(),
+                self.transport.clone(),
                 self.interceptor.clone(),
             );
         client
@@ -286,7 +304,7 @@ impl LocalWalletAdapter {
     /// their native sync APIs, while retaining the bridge's local capability.
     pub fn maintained_scanner_client(&self) -> MaintainedScannerClient {
         zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::with_interceptor(
-            self.channel.clone(), self.interceptor.clone(),
+            self.transport.clone(), self.interceptor.clone(),
         )
     }
 }
