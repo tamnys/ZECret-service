@@ -1,8 +1,9 @@
 # Phala wallet context hardware checkpoint, 2026-10-06
 
-This internal checkpoint records live acceptance of the context-capable read
-image. It is not completed reference-wallet acceptance or a distributed release
-approval. The operator reconfirmed the narrow exact NU7 release-age exception;
+This internal record preserves the incremental checkpoints and final acceptance
+of the context-capable wallet-read image. Earlier incomplete checkpoints remain
+below; the final section identifies their resolved outcomes. The operator
+reconfirmed the narrow exact NU7 release-age exception;
 checksum, advisory, runtime and attestation requirements remain in force.
 
 ## Artifact identities and update
@@ -141,3 +142,107 @@ remain uncommitted and unpackaged. PR 398 remains a draft evidence checkpoint;
 no final wallet release is approved. No new VM, disk or server image was created
 for these additional checks. Original budget, ledger and deletion deadlines
 remain unchanged.
+
+## Completed local recovery and live bridge checkpoint
+
+Subsequent corrections close the two local failures above. The current SDK
+suite passes twelve tests; the complete reference-reader suite passes all
+38 tests in 77.17 seconds. Fresh CLI/reference builds completed successfully
+in 2 minutes 5 seconds, and the changed user guide passes its boundary scanner.
+
+The file-backed fixture preserves its actual synthetic network identity. Its
+positive control proves that a transaction mined above wallet H retains its
+stored mined height while the maintained wallet intentionally hides that height
+until scanning catches up. Incomplete staging still rolls back real SQL writes.
+
+Near-birthday recovery now uses the maintained precise-chain-state rewind API,
+after verified canonical block/tree checks. All four interrupted fork boundaries
+exercise this production helper. An orphaned, unexpired receipt is retained as
+unconfirmed data alongside the replacement; the same production status handler
+and maintained expiry/certainty policy later remove unavailable old receipts.
+No artificial checkpoint policy, transaction body or wallet-status override is
+used to obtain the expected balances. These correctness tests remain synthetic.
+
+Tested client changes are committed as
+`6b3fc4e5a4e162275babf8786d189cda242b9e2a` (embedded SDK/resource probe) and
+`e8505309b5f6ec3e5ca911b30021c272424ab284` (reference recovery/pending and
+integration guide). The guest image and its original source identity remain
+unchanged; these commits do not describe a new deployed server image.
+
+The rebuilt reader completed a live loopback-bridge scan with exit status zero.
+Wallet scan and local tip were both 4,472,395, with compact scanning complete,
+ten successful mined transparent-history reads, ten pending-snapshot checks,
+no deferred or unverified pending checks and no unsupported requests. Ten
+open-ended address refreshes remained scheduled; nonrecurring work was zero.
+The finite pending snapshot was at height 4,472,397 with internal hash
+`88c9bb50a1d916630ba6757ba8d78905505c29fd2414fe1ad088063e3f260000`.
+Those two newer blocks were not promoted into confirmed wallet progress.
+
+This live synthetic view-only wallet has zero observed pool balances. Nonzero
+receipt/spend/memo and forced-fork correctness evidence is supplied by the
+maintained deterministic fixtures, not this empty live wallet. Direct embedded
+wallet synchronization and final distributed release packaging remain separate
+acceptance work. The temporary candidate catalog is still excluded from commits.
+
+Fresh read-only ledger inspection remains generation 79 with no draft. Its
+modeled conservative exposure at Unix time 1,791,314,767 is $39.384049, not final
+billing. Original budget, deletion trigger and deadlines remain unchanged.
+
+## Both reference interfaces completed
+
+The same rebuilt reader then completed direct embedded SDK synchronization with
+exit status zero, reusing the saved synthetic wallet and cache in a new process.
+Wallet H and pending snapshot T were both 4,472,408, with internal snapshot hash
+`6e950d37f85c3f3976b9a67d68f5abbe868398b11fc3ee56fa207a5a29180000`.
+Compact scanning, ten mined-history reads and ten pending checks completed.
+There were no deferred checks, unsupported requests or unfinished nonrecurring
+requests. Ten recurring address refreshes remained scheduled. Two transactions
+mined during their later raw-data fetches; the reader retained those transitions
+without advancing its confirmed wallet anchor. Local scan status was reported.
+
+The standalone `pending` command also exited zero through the protected bridge.
+It processed three transactions at node snapshot T 4,472,420, internal hash
+`990e3600f29a8bdc5e8facc30330e179818ba557300c0a61eaf67702b01b0000`,
+while wallet H remained 4,472,408. Its twelve-block gap was explicitly reported
+as an observation requiring rescanning to reconcile. It did not claim those
+blocks were scanned or that the result was an atomic balance snapshot.
+
+Both interfaces therefore completed the reference testnet wallet after previous
+interrupted reads and process restarts, with fresh verified upstream sessions.
+Nonzero transparent, Sapling, Orchard and additional active-pool wallet results,
+memos, restoration and forced forks are covered by maintained deterministic
+fixtures. This live view-only wallet has zero observed balances; no claim of a
+funded live wallet or a forced hardware-chain reorganization is made.
+
+## Reviewed client release package
+
+The distributed Phala-trusting release is
+`phala-prod5-nu7-wallet-read-20261006`, with manifest SHA-256
+`7819dc15c9cf8fe6e9188afe6692ebb9867b87db1cbd071345f2552b084ea8f7`.
+It preserves the candidate's exact reviewed hardware reference, OS, launch,
+application/issuer/quote digests and KMS public-key identity. Only its release
+identifier changes. It is separate from the empty provider-independent catalog.
+
+The package includes exact launch bytes, local collateral, the narrowing external
+selector and artifact receipt under `deploy/phala/releases/2026-10-06/`.
+The independently reconstructed stock boot references remain tied to native
+reconstruction run 36884249470 and its authenticated artifact digest; neither
+Phala's `verified` response nor this VM's first quote supplied approval.
+The actual filesystem discrepancy and Phala administration/runtime/KMS remain
+within the explicit Phala-trusting assumptions, not newly proven isolation.
+
+Managed verifier tests after catalog packaging pass all 53 tests and two
+compile-fail checks. Both client executables rebuilt successfully in 4 minutes
+19 seconds. Fresh verification using the packaged launch, collateral and
+selector exited zero: Phala-trusting authorization true, strict acceptance
+false, simulation false and no query body sent. A subsequent embedded SDK info
+read using those same packaged inputs exited zero at testnet node height
+4,472,464. The user-guide boundary scanner and whitespace checks passed.
+
+Catch-up evidence includes resumed scans advancing 4,465,340 to 4,467,661,
+then completing 4,472,048 and 4,472,100 before the two final interfaces above.
+The earlier node catch-up and aggregate memory samples are preserved in
+`records/phala-wallet-sustained-2026-10-06.md`. These observations do not measure
+the entire initial-sync duration, saturated capacity or workload-wide peak.
+No further unchanged server rebuild or conformance run is needed for this
+client-only catalog packaging; the deployed image identity stays unchanged.

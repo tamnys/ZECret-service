@@ -11,6 +11,8 @@ wallet application → Rust SDK, directly or through authenticated loopback gRPC
 
 Both paths require a wallet-capable, client-approved Phala release. They use the explicit `phala-trusted` profile, which trusts Phala's guest administration, KMS, and persistent runtime controls. The provider-independent profile remains unavailable. An older block-query-only endpoint or release policy cannot authorize wallet reads.
 
+The packaged testnet release uses [the exact launch configuration](../deploy/phala/releases/2026-10-06/wallet-read-app-compose.json), [offline collateral](../deploy/phala/releases/2026-10-06/wallet-read-collateral.json), and [release selector](../deploy/phala/releases/2026-10-06/wallet-read-selection-policy.json). Set `ZRPC_APP_COMPOSE`, `ZRPC_COLLATERAL`, and `ZRPC_RELEASE_POLICY` to those local files. The selector narrows the client’s packaged approval; it cannot approve another image or deployment. Collateral must remain valid at verification time. Obtain the endpoint from the operator of this exact deployment; creating a replacement requires a new reviewed instance selection and client release.
+
 ## Build and configure
 
 Build on Linux with Rust 1.94.1 and the committed lockfile:
